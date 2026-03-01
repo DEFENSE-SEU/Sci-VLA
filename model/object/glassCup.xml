@@ -1,0 +1,43 @@
+<mujoco model="custom_object_scene">
+
+  <!-- 自动从该目录加载 base.obj 与贴图 -->
+  <compiler angle="radian"
+            assetdir="../../assets/glassCup"/>
+
+  <asset>
+    <!-- 主 mesh -->
+    <mesh name="myobject_mesh" file="base.obj" scale="0.1 0.1 0.1"/>
+
+    <!-- =======================
+         贴图纹理（均为 type="2d"）
+         ======================= -->
+    <texture name="my_diffuse"   type="2d" file="texture_diffuse.png"/>
+    <texture name="my_metallic"  type="2d" file="texture_metallic.png"/>
+    <texture name="my_normal"    type="2d" file="texture_normal.png"/>
+    <texture name="my_pbr"       type="2d" file="texture_pbr.png"/>
+    <texture name="my_roughness" type="2d" file="texture_roughness.png"/>
+
+    <!-- =======================
+         材质（MuJoCo 不支持金属度、粗糙度参数）
+         可以绑定 diffuse 贴图、法线贴图
+         ======================= -->
+    <material name="my_mat"
+              rgba="1 1 1 1"
+              texture="my_diffuse"
+              texuniform="true"
+              texrepeat="1 1"/>
+  </asset>
+
+  <worldbody>
+
+    <!-- 放置位置可修改 -->
+    <body name="my_object" euler="1.5708 0 0">
+      <freejoint/>   <!-- 若想可被机械臂抓取，保留 -->
+
+      <geom type="mesh"
+            mesh="myobject_mesh"
+            material="my_mat"/>
+    </body>
+
+  </worldbody>
+</mujoco>

@@ -1,0 +1,39 @@
+<mujoco model="custom_object_scene">
+
+  <!-- assetdir 指向包含 base.obj 与所有贴图的文件夹 -->
+  <compiler angle="radian"
+            assetdir="../../assets/woodenBowl"/>
+
+  <asset>
+
+    <!-- 主 mesh -->
+    <mesh name="myobject_mesh" file="base.obj" scale="0.1 0.1 0.1"/>
+
+    <!-- 纹理（MuJoCo 只会真实使用 diffuse，其余只是加载不会报错） -->
+    <texture name="my_diffuse"    type="2d" file="texture_diffuse.png"/>
+    <texture name="my_normal"     type="2d" file="texture_normal.png"/>
+    <texture name="my_roughness"  type="2d" file="texture_roughness.png"/>
+    <texture name="my_metallic"   type="2d" file="texture_metallic.png"/>
+    <texture name="my_pbr"        type="2d" file="texture_pbr.png"/>
+
+    <!-- 主要材质：只绑定 diffuse -->
+    <material name="my_mat"
+              texture="my_diffuse"
+              rgba="1 1 1 1"
+              texrepeat="1 1"/>
+  </asset>
+
+  <worldbody>
+
+    <!-- 物体本体，可移动（如果不要自由移动可以删除 freejoint） -->
+    <body name="my_object" pos="0.5 0 0.2">
+     
+
+      <geom type="mesh"
+            mesh="myobject_mesh"
+            material="my_mat"/>
+    </body>
+
+  </worldbody>
+
+</mujoco>

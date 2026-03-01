@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="centrifuge_50ml_screw">
+  <compiler angle="radian" meshdir="../../assets" />
+
+  <option integrator="implicitfast" impratio="1" cone="elliptic" noslip_iterations="2" />
+
+  <asset>
+    <mesh name="centrifuge_50ml_screw_body-visual" file="container/centrifuge_50ml_screw_vis/centrifuge_tube_50ml_body.STL" scale="0.001 0.001 0.001" />
+    <mesh name="centrifuge_50ml_screw_cap-visual" file="container/centrifuge_50ml_screw_vis/centrifuge_tube_50ml_cap.STL" scale="0.001 0.001 0.001" />
+  </asset>
+
+  <visual>
+        <global azimuth="220" elevation="0"/>
+  </visual>
+
+  <worldbody>
+    <!-- Body -->
+    <body name="centrifuge_50ml_screw_body">
+      <!-- 直接使用rgba替代material -->
+      <geom name="centrifuge_50ml_screw_body-visual" type="mesh" group="2" density="0" contype="0" conaffinity="0" 
+            mesh="centrifuge_50ml_screw_body-visual" rgba="1 1 1 0.2" />
+      <geom type="cylinder" size="0.01397 0.0010000000000000009" pos="0 0 0.0010000000000000009" group="3" friction="1.6 0.06 0.008" />
+      <geom name="body_cyl" type="cylinder" size="0.013 0.057325" pos="0 0 0.057325" group="5" 
+            contype="0" conaffinity="0" density="0"/>
+    </body>
+
+    <!-- Cap -->
+    <body name="centrifuge_50ml_screw_cap" pos="0 0 0.11965" euler="3.1415926535 0 0">
+      <!-- 直接使用rgba替代material -->
+      <geom type="mesh" group="2" density="0" contype="0" conaffinity="0" 
+            mesh="centrifuge_50ml_screw_cap-visual" rgba="0.9294 0.2706 0.0627 1" />
+      <!-- 移除插件相关的geom -->
+      <!-- <geom type="sdf" name="nut" mesh="nut" rgba="1 0 0 1" pos="0 0 0.0091" contype="0" conaffinity="0" group="5">
+          <plugin instance="nut"/>
+      </geom> -->
+      <geom name="cap_cyl" type="cylinder" size="0.0176 0.0062" pos="0 0 0.0062" group="5" 
+            contype="0" conaffinity="0" margin="0.001" rgba="0.5 0.5 0.5 0.2"/>
+      <geom type="cylinder" size="0.01775 0.0016700000000000005" pos="0 0 0.0016700000000000005" group="3" friction="1.6 0.06 0.008" />
+    </body>
+  </worldbody>
+</mujoco>

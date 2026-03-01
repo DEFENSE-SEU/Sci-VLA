@@ -1,0 +1,48 @@
+<mujoco model="tabletop_example">
+  <compiler angle="radian" coordinate="local"/>
+
+  <default>
+    <geom contype="1" conaffinity="1" friction="1 0.5 0.1" density="1000"/>
+    <joint limited="true"/>
+  </default>
+
+  <asset>
+    <!-- 可选：纹理/mesh 等 -->
+  </asset>
+
+  <!-- 包含 Franka / Panda 机器人模型（需本地有 panda.xml） -->
+  <include file="franka_emika_panda/panda.xml"/>
+
+  <worldbody>
+    <!-- 地面（可选） -->
+    <geom name="floor" pos="0 0 0" size="4 4 0.01" type="plane"/>
+
+    <!-- 一张桌子：简单用 box（静态） -->
+    <body name="table" pos="0.6 0 0.38">
+      <!-- 桌面 -->
+      <geom name="table_top" type="box" size="0.4 0.6 0.02 pos="0 0 0.0" rgba="0.8 0.7 0.6 1"/>
+      <!-- 桌腿（简化为四个小柱） -->
+      <geom pos=" 0.35  0.55 -0.38" size="0.02 0.02 0.38" type="box"/>
+      <geom pos="-0.35  0.55 -0.38" size="0.02 0.02 0.38" type="box"/>
+      <geom pos=" 0.35 -0.55 -0.38" size="0.02 0.02 0.38" type="box"/>
+      <geom pos="-0.35 -0.55 -0.38" size="0.02 0.02 0.38" type="box"/>
+    </body>
+
+    <!-- 桌面上的正方体 block（freejoint，可抓取） -->
+    <body name="block" pos="0.6 0 0.46">
+      <freejoint/>
+      <geom name="cube" type="box" size="0.03 0.03 0.03 rgba='0.2 0.5 0.9 1' mass="0.1"/>
+    </body>
+
+    <!-- 假定 panda.xml 中定义了名为 "panda" 的 body；这里平移它放在桌边 -->
+    <!-- 如果 panda.xml 已包含 base pos 可删除下面这个 wrapper -->
+    <body name="panda_wrapper" pos="0  -0.8 0.0">
+      <!-- include 会把 panda.xml 的 body 插入到这里 -->
+      <include file="panda.xml"/>
+    </body>
+
+  </worldbody>
+
+  <tendon/>
+  <actuator/>
+</mujoco>

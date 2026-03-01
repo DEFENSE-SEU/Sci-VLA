@@ -1,0 +1,52 @@
+<mujoco model="pipette pickup from stand">
+
+    <option integrator="implicitfast" impratio="10" cone="elliptic" noslip_iterations="2">
+        <flag multiccd="enable"/>    
+    </option>
+    
+    <visual>
+        <global azimuth="220" elevation="-30" offwidth="1280" offheight="960"/>
+    </visual>
+
+    <asset>
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.6 0.7 0.8" rgb2="0.4 0.5 0.6" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5"/>
+        
+        <!-- 模型文件 -->
+        <model name="table" file="../misc/simple_table.xml" content_type="text/xml" />
+        <model name="ur5e" file="../robot/ur5e_gripper.xml" content_type="text/xml" />
+        <model name="pipette" file="../object/pipette.gen.xml" content_type="text/xml" />
+        <model name="pipette_rack" file="../object/pipette_rack.gen.xml" content_type="text/xml" />
+        
+    </asset>
+
+    <worldbody>
+        <light directional="true" diffuse="0.8 0.8 0.8" ambient="0.2 0.2 0.2" pos="0 0 5" dir="0 0 -1"/>
+        <geom name="floor" pos="0 0 0" size="2.5 2 0.05" type="plane" material="groundplane"/>
+        
+        <body name="table3" pos="0 0 0" quat="1 0 0 1">
+            <camera name="table_cam_front" pos="0. -1.2 1.35" quat="0.819 0.574 0 0" fovy="45" resolution="1280 960"/>
+            <camera name="table_cam_left" pos="-1.2 0. 1.65" quat="0.579 0.406 -0.406 -0.579" fovy="45" resolution="1280 960"/>
+            <!-- 桌子 -->
+            <attach model="table" body="vention table" prefix="/"/>
+            
+            <!-- 只保留一个机械臂（带夹爪的UR5e） -->
+            <body name="1/ur5e:" pos="0.5 0.2 0.824" quat="0 0 0 1">
+                <attach model="ur5e" body="world" prefix="1/ur:"/>
+            </body>
+            <body name="pipette_stand_base" pos="-0.2 -0.2 0.854" euler="0 0 0">
+                <attach model="pipette_rack" body="pipette_rack" prefix="rack/"/>
+            </body>
+            
+            <!-- 桌子中心标记（可视化用）-->
+            <site name="table_center_marker" pos="0 0 0.15" size="0.02" type="sphere" rgba="1 0 0 0.3" group="3"/>
+        </body>
+        <body name="pipette_on_stand" pos="-0.2 -0.2 0.934" quat="1 0 0 0">
+            <freejoint name="pipette_joint"/>
+            <attach model="pipette" body="pipette" prefix="tl/"/>
+        </body>
+
+    </worldbody>
+
+</mujoco>

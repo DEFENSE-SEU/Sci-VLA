@@ -1,0 +1,41 @@
+<mujoco model="TuozhuPrinter">
+  <compiler angle="radian" meshdir="../../assets"/>
+
+  <asset>
+    <mesh
+      name="tuozhu_printer_mesh"
+      file="TuozhuPrinter/base.obj"
+      scale="0.001 0.001 0.001"/>
+
+    <texture
+      name="tuozhu_diffuse"
+      type="2d"
+      file="../../assets/TuozhuPrinter/texture_diffuse.png"/>
+
+    <material
+      name="tuozhu_material"
+      texture="tuozhu_diffuse"
+      rgba="1 1 1 1"
+      specular="0.25"
+      shininess="0.15"/>
+  </asset>
+
+  <worldbody>
+    <body name="tuozhu_printer">
+      <geom
+        type="mesh"
+        mesh="tuozhu_printer_mesh"
+        material="tuozhu_material"
+        contype="0"
+        conaffinity="0"/>
+
+      <geom
+        type="mesh"
+        mesh="tuozhu_printer_mesh"
+        contype="1"
+        conaffinity="1"
+        rgba="0.8 0.8 0.8 1"/>
+
+    </body>
+  </worldbody>
+</mujoco>

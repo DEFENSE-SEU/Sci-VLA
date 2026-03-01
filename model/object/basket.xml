@@ -1,0 +1,81 @@
+<mujoco model="basket">
+  <compiler angle="radian" meshdir="../../assets"/>
+
+  <option gravity="0 0 -9.81"/>
+
+  <asset>
+    <mesh
+      name="basket_mesh"
+      file="basket/base.obj"
+      scale="0.3 0.3 0.3"
+      />
+  </asset>
+
+ <worldbody>
+  <body name="basket">
+
+    <!-- ========= 视觉 ========= -->
+    <geom name="basket_visual"
+          type="mesh"
+          mesh="basket_mesh"
+          contype="0"
+          conaffinity="0"/>
+
+    <!-- ========= 碰撞：整体旋转的子坐标系（碰撞体可视） ========= -->
+    <body name="basket_collision_frame"
+          pos="0 0 0"
+          quat="1 -1 0 0">
+          <!-- ↑ 把这里的 quat 改成你想要的整体旋转 -->
+
+      <geom name="basket_col_bottom"
+            type="box"
+            size="0.15 0.20 0.005"
+            pos="0 0 0.005"
+            contype="1"
+            conaffinity="1"
+            friction="1.0 0.3 0.001"
+            rgba="0 0 0 0"/>
+
+      <geom name="basket_col_wall_front"
+            type="box"
+            size="0.16 0.005 0.11"
+            pos="0 0.23 0.12"
+            contype="1"
+            conaffinity="1"
+            friction="1.0 0.3 0.001"
+            
+            rgba="0 0 0 0"/>
+
+      <geom name="basket_col_wall_back"
+            type="box"
+            size="0.16 0.005 0.11"
+            pos="0 -0.23 0.12"
+            contype="1"
+            conaffinity="1"
+            friction="1.0 0.3 0.001"
+            rgba="0 0 0 0"/>
+
+      <geom name="basket_col_wall_right"
+            type="box"
+            size="0.005 0.22 0.12"
+            pos="0.17 0 0.12"
+            contype="1"
+            conaffinity="1"
+            friction="1.0 0.3 0.001"
+            rgba="0 0 0 0"/>
+
+      <geom name="basket_col_wall_left"
+            type="box"
+            size="0.005 0.22 0.12"
+            pos="-0.17 0 0.12"
+            contype="1"
+            conaffinity="1"
+            friction="1.0 0.3 0.001"
+            rgba="0 0 0 0"/>
+
+    </body>
+  </body>
+ </worldbody>
+
+
+</mujoco>

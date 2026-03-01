@@ -1,0 +1,67 @@
+<mujoco model="plank_car_assembly">
+  <compiler angle="radian"
+            meshdir="../../assets/plank_car"/>
+
+  <asset>
+    <mesh name="body"   file="body.obj"/>
+    <mesh name="wheel1" file="wheel1.obj"/>
+    <mesh name="wheel2" file="wheel2.obj"/>
+    <mesh name="wheel3" file="wheel3.obj"/>
+    <mesh name="wheel4" file="wheel4.obj"/>
+    <mesh name="A1" file="A1.obj"/>
+    <mesh name="A2" file="A2.obj"/>
+    <mesh name="B1" file="B1.obj"/>
+    <mesh name="B2" file="B2.obj"/>
+  </asset>
+
+  <worldbody>
+    <!-- 车体 -->
+    <body name="body" pos="0 0 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="body"/>
+    </body>
+
+    <!-- 轮子 -->
+    <body name="wheel1" pos="0.2 0.1 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="wheel1"/>
+    </body>
+
+    <body name="wheel2" pos="0.2 -0.1 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="wheel2"/>
+    </body>
+
+    <body name="wheel3" pos="-0.2 0.1 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="wheel3"/>
+    </body>
+
+    <body name="wheel4" pos="-0.2 -0.1 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="wheel4"/>
+    </body>
+
+    <!-- 其他结构件 -->
+    <body name="A1" pos="0.3 0 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="A1"/>
+    </body>
+
+    <body name="A2" pos="0.35 0 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="A2"/>
+    </body>
+
+    <body name="B1" pos="-0.3 0 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="B1"/>
+    </body>
+
+    <body name="B2" pos="-0.35 0 0.05">
+      <freejoint/>
+      <geom type="mesh" mesh="B2"/>
+    </body>
+
+  </worldbody>
+</mujoco>

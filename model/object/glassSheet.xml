@@ -1,0 +1,49 @@
+<mujoco model="glassSheet">
+  <!-- XML 在 model/object，下两级回到 assets -->
+  <compiler angle="radian" meshdir="../../assets"/>
+
+  <asset>
+    <!-- 主 mesh -->
+    <mesh
+      name="glass_sheet_mesh"
+      file="glassSheet/base.obj"
+      scale="0.1 0.1 0.1"/>
+
+    <!-- 如果有 diffuse 贴图就用，没有也不会炸 -->
+    <texture
+      name="glass_diffuse"
+      type="2d"
+      file="../../assets/glassSheet/texture_diffuse.png"/>
+
+    <!-- 玻璃近似材质（MuJoCo 不是真 PBR） -->
+    <material
+      name="glass_material"
+      texture="glass_diffuse"
+      rgba="1 0 0 1"/>
+  </asset>
+
+  <worldbody>
+    <body name="glass_sheet"   euler="1.5708 0 0">
+
+      <!-- 视觉几何 -->
+      <geom
+        name="glass_sheet_visual"
+        type="mesh"
+        mesh="glass_sheet_mesh"
+        material="glass_material"
+        contype="0"
+        conaffinity="0"/>
+
+      <!-- 碰撞几何（可抓取 / 可放置） -->
+      <geom
+        name="glass_sheet_collision"
+        type="mesh"
+        mesh="glass_sheet_mesh"
+        rgba="0.9 0.9 0.9 1"
+        contype="1"
+        conaffinity="1"
+        friction="0.6 0.2 0.001"/>
+
+    </body>
+  </worldbody>
+</mujoco>

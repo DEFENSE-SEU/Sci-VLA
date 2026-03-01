@@ -1,0 +1,61 @@
+<mujoco model="insert">
+
+    <option integrator="implicitfast" impratio="10" cone="elliptic" noslip_iterations="2">
+        <flag multiccd="enable"/>
+    </option>
+    <visual>
+        <global azimuth="220" elevation="-30" offwidth="1280" offheight="960"/>
+    </visual>
+
+    <asset>
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.6 0.7 0.8" rgb2="0.4 0.5 0.6" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5"/>
+        <model name="centrifuge_10slot" file="../object/centrifuge_10slot.gen.xml" content_type="text/xml" />
+        <model name="table" file="../misc/simple_table.xml" content_type="text/xml" />
+        <model name="ur5e" file="../robot/ur5e_gripper.xml" content_type="text/xml" />
+        <model name="basket" file="../object/basket.xml" content_type="text/xml" />
+        <model name="tipbox" file="../object/tip_box.gen.xml" content_type="text/xml" />
+        <model name="centrifuge_10slot" file="../object/centrifuge_10slot.gen.xml" content_type="text/xml" />
+        <model name="centrifuge_50ml_screw" file="../object/centrifuge_50ml_screw.xml" content_type="text/xml" />
+        <model name="pcr_plate_96well" file="../object/pcr_plate_96well.gen.xml" content_type="text/xml" />
+    </asset>
+
+    <worldbody>
+        <light directional="true" diffuse="0.8 0.8 0.8" ambient="0.2 0.2 0.2" pos="0 0 5" dir="0 0 -1"/>
+        <geom name="floor" pos="0 0 0" size="2.5 2 0.05" type="plane" material="groundplane"/>
+        <body name="table" pos="0 0 0" quat="1 0 0 1">
+            <attach model="table" body="vention table" prefix="/"/>
+            <body name="slot1" pos="-0.3 -0.3 0.854" quat="0 0 0 1">
+                <attach model="centrifuge_10slot" body="centrifuge_10slot" prefix="slot1/"/>
+            </body>
+            <body name="1/ur5e" pos="0.0 0.1 0.824" quat="0 0 0 -1">
+                <attach model="ur5e" body="world" prefix="/ur:"/>
+            </body>
+            <body name="basket" pos="0.5 -0.4 0.854" quat="0.5 0.5 0.5 0.5">
+                <attach model="basket" body="basket" prefix="1/"/>
+            </body>
+            <camera name="table_cam_front" pos="0. -1.4 1.45" quat="0.819 0.574 0 0" fovy="45" resolution="1280 960"/>
+            <camera name="table_cam_left" pos="-1.2 0. 1.45" quat="0.579 0.406 -0.406 -0.579" fovy="45" resolution="1280 960"/>
+        </body>
+        <body name="centrifuge_50ml_screw" pos="0.3 -0.2 0.84" quat="1 0 0 0">
+            <joint name="centrifuge_50ml_screw_joint" type="free"/>
+            <attach model="centrifuge_50ml_screw" body="world" prefix="centrifuge/"/>
+        </body>
+        <body name="pcr_plate_96well" pos="0.1 -0 0.834" quat="1 0 0 1">
+            <joint name="pcr_plate_free" type="free" limited="false" armature="0.01" damping="0.1"/>
+            <site name="grip_right" pos="0.06388 0 0.007" size="0.01" rgba="1 0 0 1"/>
+            <site name="grip_left" pos="-0.06388 0 0.007" size="0.01" rgba="0 1 0 1"/>
+            <site name="grip_front" pos="0 0.04274 0.007" size="0.01" rgba="0 0 1 1"/>
+            <site name="grip_back" pos="0 -0.04274 0.007" size="0.01" rgba="1 1 0 1"/>
+            <geom name="plate_collision" type="box" size="0.064 0.035 0.0075" 
+            pos="0 0 0.005" rgba="0.5 0.5 0.5 0.3"
+            friction="1.5 0.3 0.001" condim="4"/>
+            <attach model="pcr_plate_96well" body="world" prefix="96/" />
+        </body>
+        <body name="tipbox_body" pos="0.5 0.3 0.84" quat="1 0 0 0">
+            <joint name="tipbox_joint" type="free"/>
+            <attach model="tipbox" body="tip_box" prefix="tipbox/"/>
+        </body>
+    </worldbody>
+</mujoco>

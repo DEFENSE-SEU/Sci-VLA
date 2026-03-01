@@ -1,0 +1,33 @@
+<mujoco model="glassBowl">
+
+  <!-- 让 MuJoCo 自动从 steel_bowl 文件夹加载 base.obj + 纹理 -->
+  <compiler angle="radian"
+            assetdir="../../assets/glassBowl"/>
+
+  <asset>
+    <!-- 主 mesh -->
+    <mesh name="glass_bowl_mesh" file="base.obj" scale="0.1 0.1 0.1"/>
+    <texture name="my_diffuse"    type="2d" file="texture_diffuse.png"/>
+    <texture name="my_normal"     type="2d" file="texture_normal.png"/>
+    <texture name="my_roughness"  type="2d" file="texture_roughness.png"/>
+    <texture name="my_metallic"   type="2d" file="texture_metallic.png"/>
+    <texture name="my_pbr"        type="2d" file="texture_pbr.png"/>
+    <!-- 使用 diffuse 作为主要材质 -->
+    <material name="my_mat"
+              rgba="1 1 1 1"
+              texture="my_diffuse"
+              texrepeat="1 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- 放置 3D 物体的位置（可改） -->
+    <body name="glass_bowl"  euler="1.5708 0 0">
+      <freejoint/>  <!-- 可自由移动、可抓取 -->
+
+      <geom type="mesh"
+            mesh="glass_bowl_mesh"
+            material="my_mat"/>
+    </body>
+  </worldbody>
+
+</mujoco>

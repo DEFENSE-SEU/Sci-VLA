@@ -1,0 +1,38 @@
+<mujoco model="HotPlateHPR6">
+  <!-- XML 位于 model/object，返回到 assets -->
+  <compiler angle="radian" meshdir="../../assets"/>
+
+  <option gravity="0 0 -9.81"/>
+
+  <asset>
+    <!-- 主 mesh -->
+    <mesh
+      name="hotplate_hpr6_mesh"
+      file="HotPlateHPR6/base.obj"
+      scale="0.3 0.3 0.3"/>
+  </asset>
+
+  <worldbody>
+    <body name="hotplate_hpr6">
+
+      <!-- 视觉几何 -->
+      <geom
+        name="hotplate_hpr6_visual"
+        type="mesh"
+        mesh="hotplate_hpr6_mesh"
+        contype="0"
+        conaffinity="0"/>
+
+      <!-- 碰撞几何 -->
+      <geom
+        name="hotplate_hpr6_collision"
+        type="mesh"
+        mesh="hotplate_hpr6_mesh"
+        rgba="0.8 0.8 0.8 1"
+        contype="1"
+        conaffinity="1"
+        friction="1.0 0.3 0.001"/>
+
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,38 @@
+<mujoco model="OzoneCleanerUV6">
+  <!-- XML 位于 model/object，需要回到 assets -->
+  <compiler angle="radian" meshdir="../../assets"/>
+
+  <option gravity="0 0 -9.81"/>
+
+  <asset>
+    <!-- 主模型 mesh -->
+    <mesh
+      name="ozone_cleaner_uv6_mesh"
+      file="OzoneCleanerUV6/base.obj"
+      scale="0.3 0.3 0.3"/>
+  </asset>
+
+  <worldbody>
+    <body name="ozone_cleaner_uv6">
+
+      <!-- 视觉几何 -->
+      <geom
+        name="ozone_cleaner_uv6_visual"
+        type="mesh"
+        mesh="ozone_cleaner_uv6_mesh"
+        contype="0"
+        conaffinity="0"/>
+
+      <!-- 碰撞几何 -->
+      <geom
+        name="ozone_cleaner_uv6_collision"
+        type="mesh"
+        mesh="ozone_cleaner_uv6_mesh"
+        rgba="0.8 0.8 0.8 1"
+        contype="1"
+        conaffinity="1"
+        friction="1.0 0.3 0.001"/>
+
+    </body>
+  </worldbody>
+</mujoco>

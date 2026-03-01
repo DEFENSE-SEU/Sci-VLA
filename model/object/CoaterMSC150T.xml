@@ -1,0 +1,38 @@
+<mujoco model="CoaterMSC150T">
+  <!-- XML 位于 model/object，需要返回到 assets -->
+  <compiler angle="radian" meshdir="../../assets"/>
+
+  <option gravity="0 0 -9.81"/>
+
+  <asset>
+    <!-- 主 mesh -->
+    <mesh
+      name="coater_msc150t_mesh"
+      file="CoaterMSC150T/base.obj"
+      scale="0.3 0.3 0.3"/>
+  </asset>
+
+  <worldbody>
+    <body name="coater_msc150t">
+
+      <!-- 视觉几何（不参与碰撞） -->
+      <geom
+        name="coater_msc150t_visual"
+        type="mesh"
+        mesh="coater_msc150t_mesh"
+        contype="0"
+        conaffinity="0"/>
+
+      <!-- 碰撞几何（用于交互 / 放置） -->
+      <geom
+        name="coater_msc150t_collision"
+        type="mesh"
+        mesh="coater_msc150t_mesh"
+        rgba="0.8 0.8 0.8 1"
+        contype="1"
+        conaffinity="1"
+        friction="1.0 0.3 0.001"/>
+
+    </body>
+  </worldbody>
+</mujoco>

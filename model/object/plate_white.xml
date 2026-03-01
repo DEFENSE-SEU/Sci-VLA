@@ -1,0 +1,8 @@
+<mujoco model="plate_white">
+  <worldbody>
+    <body name="plate_white" pos="0 0 0">
+      <geom type="cylinder" size="0.1 0.01" rgba="1 1 1 1" mass="0.2" condim="4" friction="1 0.005 0.0001"/>
+      <site name="top" pos="0 0 0.01" size="0.005" rgba="1 0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>

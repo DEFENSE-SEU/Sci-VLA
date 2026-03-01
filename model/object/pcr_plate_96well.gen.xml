@@ -1,0 +1,36 @@
+<mujoco model="pcr_plate_96well">
+  <compiler angle="radian" meshdir="../../assets/" />
+  
+  <asset>
+    <mesh name="pcr_plate_96well-visual_visual" file="container/pcr_plate_96well_vis/visual.obj" scale="0.001 0.001 0.001" />
+  </asset>
+
+  <worldbody>
+    <body name="pcr_plate_96well">
+      <geom name="grip_left" size="0.01 0.005 0.01" pos="0.032 -0.038 0.002" 
+            type="box" group="0" rgba="1 1 1 0"
+            friction="0.5  0.5 0.1" solref="0.005 1" solimp="0.6 0.8 0.01"/>
+      <geom name="grip_left2" size="0.01 0.005 0.01" pos="-0.026 -0.038 0.002" 
+            type="box" group="0" rgba="1 1 1 0"
+            friction="0.5  0.5 0.1" solref="0.005 1" solimp="0.6 0.8 0.01"/>
+      
+      <geom name="grip_right" size="0.01 0.005 0.01" pos="0.032 0.038 0.002" 
+            type="box" group="0" rgba="1 1 1 0"
+            friction="0.5  0.5 0.1" solref="0.005 1" solimp="0.6 0.8 0.01"/>
+      <geom name="grip_right2" size="0.01 0.005 0.01" pos="-0.026 0.038 0.002" 
+            type="box" group="0" rgba="1 1 1 0"
+            friction="0.5  0.5 0.1" solref="0.005 1" solimp="0.6 0.8 0.01"/>
+      
+      <geom size="0.06 0.00305 0.0101" pos="0 0.03695 0" type="box" group="3" 
+            friction="2.5 0.3 0.05" solref="0.01 1.5" solimp="0.85 0.95 0.005" />
+      <geom size="0.06 0.00305 0.0101" pos="0 -0.03695 0" type="box" group="3" 
+            friction="2.5 0.3 0.05" solref="0.01 1.5" solimp="0.85 0.95 0.005" />
+      
+      <geom type="mesh" contype="0" conaffinity="0" group="2" mesh="pcr_plate_96well-visual_visual" />
+      
+      <geom name="surface_texture" type="box" size="0.058 0.038 0.001" pos="0 0 0.0105"
+            friction="2 0.4 0.08" solref="0.015 1.8" solimp="0.88 0.96 0.003"
+            rgba="0.9 0.9 0.9 0.1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,34 @@
+<mujoco model="desk">
+  <!-- 让 MuJoCo 从 desk 文件夹加载 base.obj 和纹理 -->
+  <compiler angle="radian"
+            assetdir="../../assets/desk"/>
+
+  <asset>
+    <!-- 主 mesh -->
+    <mesh name="myobject_mesh" file="base.obj"/>
+
+    <!-- 纹理贴图（只用 diffuse，金属度等先不用也没关系） -->
+    <texture name="my_diffuse" type="2d" file="texture_diffuse.png"/>
+
+    <!-- 材质：绑定 diffuse 纹理 -->
+    <material name="my_mat"
+              rgba="1 1 1 1"
+              texture="my_diffuse"
+              texrepeat="1 1"
+              texuniform="true"/>
+  </asset>
+
+  <worldbody>
+    <!-- 桌面模型的位置，可以改 pos 调整位置 -->
+    <body name="my_object" 
+    pos="0 0 0"
+    euler="1.5708 0 0">
+      <!-- 如果只是单独看桌面，可以去掉 freejoint；如果想让机械臂抓取，就保留 -->
+      <!-- <freejoint/> -->
+
+      <geom type="mesh"
+            mesh="myobject_mesh"
+            material="my_mat"/>
+    </body>
+  </worldbody>
+</mujoco>
