@@ -8,7 +8,7 @@ If you already have both openpi and autobio environments, skip this section.
 ```bash
 conda create -n scivla python=3.11
 conda activate scivla
-conda install ffmpeg -c conda-forge
+conda install ffmpeg=7.1.1 -c conda-forge
 cd third_party/openpi
 pip install uv
 uv pip install -e .
@@ -35,30 +35,30 @@ bash scripts/autobio_scripts/render_all.bash logs/
 Then move all the dir into one: long_tasks. Finally, convert data to lerobot data:
 
 ```bash
-python scripts/convert.py --data-dir logs/long_tasks --repo-id your_repo_name
+python scripts/convert.py --data-dir logs/long_tasks --repo-id long_tasks
 ```
 
 ## Finetune
-When you need to train specific task, add config in third_party/openpi/src/openpi/training/config.py. (Config "long_tasks" has already included.)
+When you need to train specific task, add config in third_party/openpi/src/openpi/training/config.py. (Config "long_tasks" and "long_tasks_pi05" has already included.)
 
 ```bash
 cd third_party/openpi
-python scripts/compute_norm_stats.py --config-name long_tasks-lora
-XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks-lora --exp-name long_tasks-lora_finetune
+python scripts/compute_norm_stats.py --config-name long_tasks_pi05-lora
+XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05-lora --exp-name long_tasks_pi05-lora_finetune
 ```
 
 ## Convert jax model to pytorch model
 If you want to use pytorch:
 
 ```bash
-python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/long_tasks-lora/ --config_name long_tasks-lora --output_path checkpoints/long_tasks-lora_pytorch
+python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/long_tasks_pi05-lora/ --config_name long_tasks_pi05-lora --output_path checkpoints/long_tasks_pi05-lora_pytorch
 ```
 
 ## Evaluate
 To evaluate the policy model, run:
 
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks-lora' --policy.dir 'checkpoints/long_tasks-lora/...'
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks_pi05-lora' --policy.dir 'checkpoints/long_tasks_pi05-lora/...'
 ```
 
 then open another shell and run:
