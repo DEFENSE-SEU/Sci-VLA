@@ -128,7 +128,8 @@ class Evaluator:
         image_height: int = 224,
         image_width: int = 224,
         image_history: int = 0,
-        video_out_path: str = "./videos",  # 新增视频输出路径参数
+        video_out_path: str = "./videos",
+        video_fps: int = 20,
     ):
         self.task = task
         self.model = task.model
@@ -142,7 +143,46 @@ class Evaluator:
 
         self.video_out_path = pathlib.Path(video_out_path)
         self.video_out_path.mkdir(parents=True, exist_ok=True)
-        self.replay_images = []  # 存储用于生成视频的图像
+        self.video_fps = max(1, int(video_fps))
+        self.replay_images = []
+        self.replay_times = []
+
+    def _capture_replay_frame(self):
+        if "image" not in self.cameras:
+            return
+
+        frame = self.get_image("image")
+        if frame is None:
+            return
+        self.replay_images.append(frame.astype(np.uint8))
+        self.replay_times.append(float(self.data.time))
+
+    def _resample_replay_frames(self):
+        if not self.replay_images:
+            return [], np.array([], dtype=np.int64)
+
+        if len(self.replay_images) == 1 or len(self.replay_times) != len(self.replay_images):
+            return list(self.replay_images), np.arange(len(self.replay_images), dtype=np.int64)
+
+        times = np.asarray(self.replay_times, dtype=np.float64)
+        start_t = float(times[0])
+        end_t = float(times[-1])
+        if end_t <= start_t:
+            return [self.replay_images[0]], np.array([0], dtype=np.int64)
+
+        dt = 1.0 / self.video_fps
+        target_times = np.arange(start_t, end_t + 1e-9, dt, dtype=np.float64)
+
+        right_idx = np.searchsorted(times, target_times, side="left")
+        right_idx = np.clip(right_idx, 0, len(times) - 1)
+        left_idx = np.maximum(right_idx - 1, 0)
+
+        choose_right = np.abs(times[right_idx] - target_times) <= np.abs(times[left_idx] - target_times)
+        sampled_indices = np.where(choose_right, right_idx, left_idx)
+        sampled_indices = np.unique(sampled_indices)
+
+        sampled_frames = [self.replay_images[i] for i in sampled_indices]
+        return sampled_frames, sampled_indices
 
     def make_render_extra(self, scene: Task):
         extras = []
@@ -180,16 +220,12 @@ class Evaluator:
         }
 
     def get_observation(self):
+        images = self.get_images()
         obs = {
             "observation/state": self.data.qpos[self.task_info['state_indices']],
-            **self.get_images(),
+            **images,
             "prompt": self.task_info['prefix'],
         }
-
-        main_image = self.get_image("image")
-        if main_image is not None:
-            # 转换为uint8格式，与之前代码保持一致
-            self.replay_images.append(main_image.astype(np.uint8))
 
         if self.image_history > 0:
             for i in range(self.image_history):
@@ -227,11 +263,45 @@ class Evaluator:
         self.history_states.append(self.data.qpos)
 
         self.replay_images = []
+        self.replay_times = []
+        self._capture_replay_frame()
 
-    def save_video(self, success: bool, filename_override: str | None = None): #
-        """保存评估视频"""
+    def save_video(self, success: bool, filename_override: str | None = None, action_count: int | None = None): #
         if not self.replay_images:
             return
+
+        raw_frame_count = len(self.replay_images)
+        mean_frame_diff = 0.0
+        low_motion_ratio = 0.0
+        effective_capture_fps = 0.0
+
+        if raw_frame_count > 1:
+            diffs = []
+            for i in range(1, raw_frame_count):
+                prev = self.replay_images[i - 1].astype(np.int16)
+                curr = self.replay_images[i].astype(np.int16)
+                diffs.append(float(np.mean(np.abs(curr - prev))))
+            mean_frame_diff = float(np.mean(diffs))
+            low_motion_ratio = float(np.mean(np.asarray(diffs) < 0.5))
+
+            if len(self.replay_times) == raw_frame_count:
+                sim_span = self.replay_times[-1] - self.replay_times[0]
+                if sim_span > 0:
+                    effective_capture_fps = (raw_frame_count - 1) / sim_span
+
+        sampled_frames, sampled_indices = self._resample_replay_frames()
+        output_frame_count = len(sampled_frames)
+
+        print(
+            f"[VideoDiag] raw_frames={raw_frame_count} | output_frames={output_frame_count} | "
+            f"mean_abs_diff={mean_frame_diff:.4f} | "
+            f"low_motion_ratio={low_motion_ratio:.2%} | "
+            f"effective_capture_fps={effective_capture_fps:.3f}"
+        )
+        if action_count is not None:
+            print(
+                f"[ActionDiag] actions={action_count}"
+            )
             
         # 使用时间戳生成唯一文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒
@@ -248,18 +318,39 @@ class Evaluator:
         try:
             imageio.mimwrite(
                 video_path,
-                [np.asarray(img) for img in self.replay_images],
-                # fps=5,  # 与之前代码相同的帧率
+                [np.asarray(img) for img in sampled_frames],
+                fps=self.video_fps,
             )
             print(f"Video saved: {video_path}")
         except Exception as e:
             print(f"Failed to save video: {e}") #
 
-    def evaluate(self, policy: Policy, time_limit: float | None = None, prompts: list[str] | None = None):
+    def evaluate(
+        self,
+        policy: Policy,
+        time_limit: float | None = None,
+        prompts: list[str] | None = None,
+        use_transition_generation: bool = True,
+    ):
         if time_limit is None:
             time_limit = self.task.time_limit
 
         self.reset()
+        episode_start_wall = time.perf_counter()
+        transition_infer_total = 0.0
+        transition_total = 0.0
+        executed_action_count = 0
+        settle_duration = 2.0
+
+        def print_timing_summary():
+            episode_total = time.perf_counter() - episode_start_wall
+            transition_ratio = (transition_total / episode_total * 100.0) if episode_total > 0 else 0.0
+            print(
+                f"[Timing] transition planning total: {transition_infer_total:.3f}s | "
+                f"transition total: {transition_total:.3f}s | "
+                f"episode total: {episode_total:.3f}s | "
+                f"transition ratio: {transition_ratio:.2f}%"
+            )
 
         def step():
             """Step the task, return True if simulation is healthy."""
@@ -268,6 +359,7 @@ class Evaluator:
                 if self.data.warning.number.any():
                     # Simulation diverge, etc.
                     return False
+                self._capture_replay_frame()
                 return True
             except mujoco.FatalError as e:
                 print(f"MuJoCo simulation error: {e}")
@@ -281,17 +373,23 @@ class Evaluator:
                 traceback.print_exc()
                 return False
 
-        def run_prompt(prompt: str | None, current_time_limit: float):
-            start_time = self.data.time
-            
-            if self.task.early_stop:
-                # check_mode = prompt if prompt else ''
-                # shall_continue = lambda: not self.task.check() and (self.data.time - start_time) < current_time_limit
-                shall_continue = lambda: (self.data.time - start_time) < current_time_limit
-            else:
-                shall_continue = lambda: (self.data.time - start_time) < current_time_limit
+        # Let the scene settle for 2 seconds of simulation time before the first action.
+        settle_steps = max(1, int(round(settle_duration / self.model.opt.timestep)))
+        for _ in range(settle_steps):
+            healthy = step()
+            if not healthy:
+                self.task.finish()
+                self.render_finish()
+                self.save_video(False, action_count=executed_action_count)
+                print_timing_summary()
+                return False
+        # self._capture_replay_frame()
 
-            while shall_continue():
+        def run_prompt(prompt: str | None, current_time_limit: float):
+            nonlocal executed_action_count
+            start_time = self.data.time
+
+            while (self.data.time - start_time) < current_time_limit:
                 observation = self.get_observation()
                 actions = policy(observation)
                 assert actions.ndim == 2 and actions.shape[1] == len(self.task_info['action_indices']), breakpoint()
@@ -299,6 +397,7 @@ class Evaluator:
                 #     return True
                 for action in actions:
                     self.data.ctrl[self.task_info['action_indices']] = action
+                    executed_action_count += 1
                     self.history_states.append(self.data.qpos)
                     for _ in range(10):
                         healthy = step()
@@ -308,14 +407,13 @@ class Evaluator:
 
             
         
-        
-        # 如果没有提供 prompts，则执行默认逻辑（单任务）
         if prompts is None:
             healthy = run_prompt(None, time_limit)
             task_success = self.task.check() if healthy else False
             self.task.finish()
             self.render_finish()
-            self.save_video(task_success)
+            self.save_video(task_success, action_count=executed_action_count)
+            print_timing_summary()
             if not healthy:
                 return False
             return task_success
@@ -342,24 +440,44 @@ class Evaluator:
                 current_joint_pos = self.data.qpos[range(self.model.joint('/ur:shoulder_pan').qposadr.item(), self.model.joint('/ur:shoulder_pan').qposadr.item() + 6)]
                 np.save('logs/current_joint.npy', current_joint_pos)
 
-                if prompt!=prompts[-1]:
+                if prompt!=prompts[-1] and use_transition_generation:
+                    transition_start_wall = time.perf_counter()
                     from transition_generation import transition_code_generation
+                    transition_infer_start_wall = time.perf_counter()
                     transition_code_generation(prompts[i+1])
-                    from transition import TransitionExpert
+                    transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
+                    transition_infer_total += transition_infer_elapsed
+                    from transition_template import TransitionExpert
                     expert = TransitionExpert(self.model, self.data, self.task)
-                    expert.execute(prompts[i+1])
+                    original_step_and_log = self.task.step_and_log
+
+                    def step_and_log_with_capture(info: dict):
+                        original_step_and_log(info)
+                        self._capture_replay_frame()
+
+                    self.task.step_and_log = step_and_log_with_capture
+                    try:
+                        self._capture_replay_frame()
+                        expert.execute()
+                        self._capture_replay_frame()
+                    finally:
+                        self.task.step_and_log = original_step_and_log
+                    transition_elapsed = time.perf_counter() - transition_start_wall
+                    transition_total += transition_elapsed
+                    print(
+                        f"[Timing] transition to next prompt took {transition_elapsed:.3f}s "
+                        f"(inference {transition_infer_elapsed:.3f}s)"
+                    )
+                elif prompt != prompts[-1]:
+                    print("[Transition] Skipped transition generation (disabled by flag).")
             
             self.task.finish()
             self.render_finish()
 
             combined_prompts = ",".join([p.replace(" ", "_").replace("/", "_") for p in prompts])
-            # if all_success:
-            #     self.save_video(True, filename_override=f"{combined_prompts}_success")
-            # else:
-            #     safe_prompt = failed_prompt.replace(" ", "_").replace("/", "_")
-            #     self.save_video(False, filename_override=f"{combined_prompts},but_{safe_prompt}_fail")
 
-            self.save_video(True, filename_override=f"{combined_prompts[:35]}")
+            self.save_video(True, filename_override=f"{combined_prompts[:35]}", action_count=executed_action_count)
+            print_timing_summary()
 
             return all_success
                     
@@ -374,7 +492,8 @@ class Evaluator:
             if not healthy:
                 task_success = False
             prompt = prompt.replace(" ", "_").replace("/", "_")
-            self.save_video(task_success, filename_override=f"{prompt}")
+            self.save_video(task_success, filename_override=f"{prompt}", action_count=executed_action_count)
+            print_timing_summary()
             return task_success
 
         

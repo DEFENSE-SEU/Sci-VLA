@@ -19,7 +19,7 @@ dependencies = [
     # "jax[cpu]==0.5.3",
     "jaxtyping==0.2.36",
     "lerobot==0.3.3",
-    # "lerobot @ file:///seu_nvme/home/dishimin/230259982/projects/lerobot",
+    # "lerobot @ file:///seu_share2/home/dishimin/230259982/projects/lerobot",
     "ml_collections==1.0.0",
     "numpy>=1.22.4",
     "numpydantic>=1.6.6",

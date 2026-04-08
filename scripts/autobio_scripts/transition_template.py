@@ -12,15 +12,6 @@ from scipy.spatial.transform import Rotation as R
 import zstandard as zstd
 import io
 
-
-'''
-Transition expert class in order to perform transition action between tasks.
-Arm: UR5e
-Instrument: thermal_cycler_biorad_c1000
-Task 1: close the lid of the thermal cycler
-Task 2: open the lid of the thermal cycler
-Transition: find a way to move EE to Task 2 first action position.
-'''
 class TransitionExpert:
     def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, task):
         self.task = task
@@ -43,7 +34,6 @@ class TransitionExpert:
         self.ik = IK(self.dof, self.model, data, self.base_name, self.site_name)
         self.dt = self.model.opt.timestep
 
-        # This is the specific part for thermal cycler(object)
         self.lid_lock = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_EQUALITY, '/thermal_cycler_biorad_c1000:lid-lock')
         self.lid_joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, '/thermal_cycler_biorad_c1000:lid')
         self.lid_qpos_min = model.jnt_range[self.lid_joint, 0].item()
@@ -103,9 +93,9 @@ class TransitionExpert:
             self.task.step_and_log({})
 
     def rotate_gripper(self, angle, axis, cur_quat):
-        rotation_angle = angle  # 度
-        rotation_axis = axis  # 绕垂直轴旋转
-        # 创建旋转四元数
+        rotation_angle = angle
+        rotation_axis = axis
+
         rotate_90 = R.from_euler(rotation_axis, rotation_angle, degrees=True)
         target_quat = (rotate_90 * R.from_quat(cur_quat)).as_quat()
 
@@ -119,43 +109,38 @@ class TransitionExpert:
             self.data.ctrl[self.act_span] = traj[step]
             self.task.step_and_log({})
 
-    def find_inital_state(self, subtask_file_path):
-        with open(subtask_file_path, "rb") as f:
-            dctx = zstd.ZstdDecompressor()
-            with dctx.stream_reader(f) as reader:
-                buffer = io.BytesIO(reader.read())
-                data = np.load(buffer)
-        return data[10,1:40][11:17]
-
 
     # The real action needs to be replaced
-    def execute(self, target_task_prompt):
+    def execute(self):
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        # First move to a safe position away from any obstacles
-        # X-axis translation example, from current EE pose
+        # step 1: open gripper
+        self.gripper_control(0)
+
+        # step 2: move EE 15cm along +z
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.1, 0.0, 0.0), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.15), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
-        # Y-axis translation example, from current EE pose
+
+        # step 3: move EE 10cm along +y
         cur_pose = self.get_site_pose(self.data)
         end_pose = Pose(pos=cur_pose.pos + (0.0, 0.1, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
-        # Z-axis translation example, from current EE pose
+
+        # step 4: move EE 10cm along +x
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.1, 0.0, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
-        # Gripper control example: (0~250) 0:open, 250:fully close
-        self.gripper_control(0)
 
+        # step 5 & 6: move to target qpos and change to target gripper state
+        target_qpos = [..., ..., ..., ..., ..., ...] #get by the given plan_steps_json and fill in
+        target_gripper = ...  #get by the given plan_steps_json and fill in
 
-        # Second move to the target joint position. You need to find the target joint position from the target task initial state. 
-        # These 2 lines are needed in the end of the execute function.
-        target_qpos = [0, -1.5708, 1.5708, -1.5708, -1.5708, -1.5708]
+        # Change to target gripper state (step 6)
+        self.gripper_control(target_gripper)
+        # Move to target qpos (step 5) - Ensuring this is the last operation per Output Rule 4
         self.move_to_target_qpos(target_qpos)
-
-        
