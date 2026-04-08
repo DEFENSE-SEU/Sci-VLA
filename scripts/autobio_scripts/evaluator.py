@@ -208,6 +208,31 @@ class Evaluator:
         mujoco.mjv_updateCamera(self.model, self.data, camera, self.renderer._scene)
         image = self.renderer.render()
         return image
+
+    def get_image_by_camera_name(self, camera_name: str):
+        camera_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+        if camera_id < 0:
+            return None
+        camera = mujoco.MjvCamera()
+        camera.fixedcamid = camera_id
+        camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        mujoco.mjv_updateCamera(self.model, self.data, camera, self.renderer._scene)
+        return self.renderer.render()
+
+    def get_transition_views(self):
+        # Prefer canonical viewpoints if they exist in the model.
+        front_view = self.get_image_by_camera_name("table_cam_front")
+        side_view = self.get_image_by_camera_name("table_cam_left")
+
+        # Fallback: use the task primary image camera when canonical front does not exist.
+        if front_view is None:
+            front_view = self.get_image("image")
+
+        # Fallback: if no explicit side camera exists, keep transition pipeline usable.
+        if side_view is None:
+            side_view = front_view
+
+        return front_view, side_view
     
     def get_images(self):
         self.renderer.update_scene(self.data)
@@ -435,8 +460,11 @@ class Evaluator:
                     failed_prompt = prompt
                     break
 
-                current_view = self.replay_images[-1]
-                imageio.imwrite('logs/current_view.png', current_view)
+                current_view, current_side_view = self.get_transition_views()
+                if current_view is not None:
+                    imageio.imwrite('logs/current_view.png', current_view)
+                if current_side_view is not None:
+                    imageio.imwrite('logs/current_side_view.png', current_side_view)
                 current_joint_pos = self.data.qpos[range(self.model.joint('/ur:shoulder_pan').qposadr.item(), self.model.joint('/ur:shoulder_pan').qposadr.item() + 6)]
                 np.save('logs/current_joint.npy', current_joint_pos)
 

@@ -366,7 +366,8 @@ def transition_code_generation(task_prompt: str):
     current_joint_pos = str(current_joint_pos_arr.tolist())
     template_code = read_file('scripts/autobio_scripts/transition_template.py')
     allowed_apis = _collect_execute_allowed_apis(template_code)
-    image_data_url = file_to_data_url('logs/current_view.png')
+    front_image_data_url = file_to_data_url('logs/current_view.png')
+    side_image_data_url = file_to_data_url('logs/current_side_view.png')
 
     planning_prompt = f'''
 You are a robot transition planner.
@@ -375,7 +376,8 @@ Task:
 Generate a concise path-planning list for transition execution, not code.
 
 Inputs:
-current front camera image: front-to-back is x-axis, left-to-right is y-axis, and up-and-down is z-axis.
+front camera image: front-to-back is x-axis, left-to-right is y-axis, and up-and-down is z-axis.
+left camera image: use this as complementary geometric evidence for occlusions, depth relation, and side clearance.
 
 Planning objective:
 - Safety-first, collision-avoidance.
@@ -385,6 +387,11 @@ Planning Rules:
 First, the current image is observed to analyze the states of the objects, the robotic arm, and the gripper within the scene. 
 Next, a determination is made as to whether the gripper requires releasing. (mostly should be freed) 
 Subsequently, the End-Effector (EE) is maneuvered away from all obstacles visible from any viewpoint through a combination of translational and rotational movements. 
+
+Image binding for this request:
+- The first image is the FRONT view.
+- The second image is the LEFT view.
+- You must jointly reason over both images before generating the plan.
 
 Return strictly one JSON object with schema:
 {{
@@ -467,7 +474,8 @@ Output rules:
             "role": "user",
             "content": [
                 {"type": "input_text", "text": planning_prompt},
-                {"type": "input_image", "image_url": image_data_url},
+                {"type": "input_image", "image_url": front_image_data_url},
+                {"type": "input_image", "image_url": side_image_data_url},
             ],
         }],
     )

@@ -12,7 +12,7 @@ This repository contains the Sci-VLA architecture and simulation assets (includi
 
 ## Overview
 
-Sci-VLA focuses on agentic, long-horizon task execution in scientific-lab-like simulation environments.
+Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simulation environments.
 
 - Long-horizon task decomposition and execution
 - Integration with OpenPI training and serving pipeline
@@ -95,26 +95,10 @@ export BASE_URL=your_url
 export MODEL_NAME=your_model
 export API_KEY=your_api_key
 
-# cleaning table task
-python ./scripts/autobio_scripts/evaluate.py --task 'place_centrifugeTube_into_basket' --num_episodes 20 --time_limit 30 --prompts "place pipette tip box into the basket,place pcr plate into the basket,place centrifuge tube into the basket"
 
-# task A
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --num_episodes 20 --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910"
+python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910"
 
-# task B
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --num_episodes 20 --time_limit 30 --prompts "press the screen button to stop the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910"
-
-# task C
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --num_episodes 20 --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler"
-
-# task D
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_2' --num_episodes 20 --time_limit 30 --prompts "press the button of the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler,close the lid of the thermal cycler"
-
-# task E
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --num_episodes 20 --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,press the screen button to start the centrifuge5910,press the screen button to stop the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910"
-
-# task F
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --num_episodes 20 --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler"
+python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler"
 ```
 
 ## Star History
@@ -126,12 +110,11 @@ python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1'
 If you find Sci-VLA useful in your research, please cite the paper:
 
 ```bibtex
-@article{scivla2026,
-	title   = {Sci-VLA: Agentic VLA Inference for Scientific Manipulation},
-	author  = {Anonymous},
-	journal = {arXiv preprint arXiv:2602.09430},
-	year    = {2026},
-	url     = {https://arxiv.org/abs/2602.09430}
+@article{pang2026sci,
+  title={Sci-VLA: Agentic VLA Inference Plugin for Long-Horizon Tasks in Scientific Experiments},
+  author={Pang, Yiwen and Zhou, Bo and Li, Changjin and Wang, Xuanhao and Xu, Shengxiang and Wang, Deng-Bao and Zhang, Min-Ling and Di, Shimin},
+  journal={arXiv preprint arXiv:2602.09430},
+  year={2026}
 }
 ```
 

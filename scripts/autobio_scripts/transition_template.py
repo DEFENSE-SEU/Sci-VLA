@@ -118,33 +118,26 @@ class TransitionExpert:
         # step 1: open gripper
         self.gripper_control(0)
 
-        # step 2: move EE 15cm along +z axis
+        # step 2: move EE 10cm along +z
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.15), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
-        # step 3: move EE 20cm along +x axis
+        # step 3: move EE 15cm along +y
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.20, 0.0, 0.0), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.15, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
-        # step 4: move EE 10cm along +y axis
+        # step 4: move EE 10cm along -x
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.10, 0.0), quat=cur_pose.quat)
-        path = self.interpolate(cur_pose, end_pose, 100)
-        self.path_follow(path)
-
-        # step 5: rotate EE 30 degrees around z-axis
-        cur_pose = self.get_site_pose(self.data)
-        target_quat = self.rotate_gripper(30, 'z', cur_pose.quat)
-        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
+        end_pose = Pose(pos=cur_pose.pos + (-0.1, 0.0, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
         # Restore to target pose (hard-inserted from planning JSON).
-        target_qpos = [-1.1537259817123413, -1.6147799491882324, 1.4893407821655273, -1.6277750730514526, -1.765243649482727, -1.396336555480957]
+        target_qpos = [-1.108430027961731, -1.6148161888122559, 1.5584818124771118, -1.564374327659607, -1.3796042203903198, -1.5554016828536987]
         target_gripper = 0.0
         self.move_to_target_qpos(target_qpos)
         self.gripper_control(target_gripper)

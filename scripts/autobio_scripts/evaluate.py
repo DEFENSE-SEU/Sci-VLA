@@ -118,7 +118,7 @@ def parse_args():
     parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket server host")
     parser.add_argument("--port", type=int, default=8000, help="WebSocket server port")
     parser.add_argument("--task", type=str, default="pickup", help="Task name")
-    parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to evaluate")
+    parser.add_argument("--num_episodes", type=int, default=20, help="Number of episodes to evaluate")
     parser.add_argument("--image_history", type=int, default=0, help="Image history for the policy")
     parser.add_argument("--num_workers", type=int, default=0, help="Number of workers for parallel evaluation, 0 for serial")
     parser.add_argument("--save", type=str, default=None, help="Output file for evaluation results")
