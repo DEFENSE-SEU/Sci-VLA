@@ -1,8 +1,32 @@
-# Sci-VLA (Agentic VLA Inference Plugin)
+# Sci-VLA
 
-This repository contains the Sci-VLA architecture and some simulation assets (including Autobio assets and newly added assets).
+<p align="center">
+	<b>Agentic VLA Inference Plugin for Long-Horizon Scientific Manipulation</b>
+</p>
 
-## Installation (editable local install):
+<p align="center">
+	<a href="https://arxiv.org/abs/2602.09430"><img alt="Paper" src="https://img.shields.io/badge/arXiv-2602.09430-b31b1b.svg"></a>
+</p>
+
+This repository contains the Sci-VLA architecture and simulation assets (including Autobio assets and newly added assets).
+
+## Overview
+
+Sci-VLA focuses on agentic, long-horizon task execution in scientific-lab-like simulation environments.
+
+- Long-horizon task decomposition and execution
+- Integration with OpenPI training and serving pipeline
+- Rich simulation assets for robotics evaluation
+
+## Quick Links
+
+- [Paper](https://arxiv.org/abs/2602.09430)
+- [Training Data Generation](#training-data-generation)
+- [Fine-tuning](#fine-tuning)
+- [Evaluation](#evaluation)
+
+## Installation (editable local install)
+
 If you already have both openpi and autobio environments, skip this section.
 
 ```bash
@@ -91,5 +115,23 @@ python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1'
 
 # task F
 python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --num_episodes 20 --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler"
+```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/Sci-VLA&type=Date)](https://star-history.com/#DEFENSE-SEU/Sci-VLA&Date)
+
+## Citation
+
+If you find Sci-VLA useful in your research, please cite the paper:
+
+```bibtex
+@article{scivla2026,
+	title   = {Sci-VLA: Agentic VLA Inference for Scientific Manipulation},
+	author  = {Anonymous},
+	journal = {arXiv preprint arXiv:2602.09430},
+	year    = {2026},
+	url     = {https://arxiv.org/abs/2602.09430}
+}
 ```
 
