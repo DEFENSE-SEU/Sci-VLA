@@ -1122,6 +1122,18 @@ _CONFIGS = [
         num_train_steps=60_000,
         wandb_enabled=False,
     ),
+    TrainConfig(
+        name="mani_thermal_cycler_pi05",
+        data=LeRoboAutoBioDataConfig(
+            repo_id="mani_thermal_cycler",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(asset_id="mani_thermal_cycler"),
+        ),
+        model=pi0_config.Pi0Config(pi05=True),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        wandb_enabled=False,
+    ),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

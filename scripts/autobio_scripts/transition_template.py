@@ -115,29 +115,36 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        # step 1: open gripper
+        # step 1: open gripper to release the green object
         self.gripper_control(0)
 
-        # step 2: move EE 10cm along +z
+        # step 2: move EE 15cm along +z axis to clear the beige box height
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.15), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
-        # step 3: move EE 15cm along +y
+        # step 3: move EE 20cm along +y axis to move towards the robot base side
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.15, 0.0), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.20, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
-        # step 4: move EE 10cm along -x
+        # step 4: move EE 10cm along +x axis to move deeper into the scene away from camera
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (-0.1, 0.0, 0.0), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.10, 0.0, 0.0), quat=cur_pose.quat)
+        path = self.interpolate(cur_pose, end_pose, 100)
+        self.path_follow(path)
+
+        # step 5: rotate EE -45 degrees around y-axis to align with stow configuration
+        cur_pose = self.get_site_pose(self.data)
+        target_quat = self.rotate_gripper(-45, 'y', cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
         # Restore to target pose (hard-inserted from planning JSON).
-        target_qpos = [-1.108430027961731, -1.6148161888122559, 1.5584818124771118, -1.564374327659607, -1.3796042203903198, -1.5554016828536987]
+        target_qpos = [-1.1447508335113525, -1.696751594543457, 1.5192636251449585, -1.6308640241622925, -1.3747559785842896, -1.718564748764038]
         target_gripper = 0.0
         self.move_to_target_qpos(target_qpos)
         self.gripper_control(target_gripper)

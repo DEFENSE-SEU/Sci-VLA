@@ -46,7 +46,6 @@ def read_file(file_path):
     except Exception as e:
         print(f"❌ Error reading file:{e}")
         exit(1)
-
 def _extract_json_object(text: str) -> dict:
     text = text.strip()
     try:
@@ -56,13 +55,32 @@ def _extract_json_object(text: str) -> dict:
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        raise ValueError("No JSON object found in LLM output")
-    obj = json.loads(match.group(0))
-    if not isinstance(obj, dict):
-        raise ValueError("LLM output JSON is not an object")
-    return obj
+    # Try fenced JSON block first, e.g. ```json {...}```.
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+    if fenced:
+        try:
+            obj = json.loads(fenced.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+    # Robust fallback: scan for the first decodable JSON object and ignore trailing extra text.
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+
+    preview = text[:400].replace("\n", "\\n")
+    raise ValueError(f"No JSON object found in LLM output. Preview: {preview}")
+
+
 
 
 def _extract_code_from_response(text: str) -> str:
