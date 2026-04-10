@@ -356,6 +356,8 @@ class Evaluator:
         time_limit: float | None = None,
         prompts: list[str] | None = None,
         use_transition_generation: bool = True,
+        no_planning: bool = False,
+        no_interpolation: bool = False,
     ):
         if time_limit is None:
             time_limit = self.task.time_limit
@@ -364,17 +366,35 @@ class Evaluator:
         episode_start_wall = time.perf_counter()
         transition_infer_total = 0.0
         transition_total = 0.0
+        transition_count = 0
         executed_action_count = 0
         settle_duration = 2.0
 
-        def print_timing_summary():
+        def build_timing_stats():
             episode_total = time.perf_counter() - episode_start_wall
             transition_ratio = (transition_total / episode_total * 100.0) if episode_total > 0 else 0.0
+            planning_avg_per_transition = (transition_infer_total / transition_count) if transition_count > 0 else 0.0
+            transition_avg_per_transition = (transition_total / transition_count) if transition_count > 0 else 0.0
+            return {
+                "transition_planning_total": float(transition_infer_total),
+                "transition_total": float(transition_total),
+                "transition_count": int(transition_count),
+                "transition_planning_avg_per_transition": float(planning_avg_per_transition),
+                "transition_avg_per_transition": float(transition_avg_per_transition),
+                "episode_total": float(episode_total),
+                "transition_ratio": float(transition_ratio),
+            }
+
+        def print_timing_summary():
+            timing = build_timing_stats()
             print(
-                f"[Timing] transition planning total: {transition_infer_total:.3f}s | "
-                f"transition total: {transition_total:.3f}s | "
-                f"episode total: {episode_total:.3f}s | "
-                f"transition ratio: {transition_ratio:.2f}%"
+                f"[Timing] transition planning total: {timing['transition_planning_total']:.3f}s | "
+                f"transition total: {timing['transition_total']:.3f}s | "
+                f"transition count: {timing['transition_count']} | "
+                f"planning avg/transition: {timing['transition_planning_avg_per_transition']:.3f}s | "
+                f"transition avg/transition: {timing['transition_avg_per_transition']:.3f}s | "
+                f"episode total: {timing['episode_total']:.3f}s | "
+                f"transition ratio: {timing['transition_ratio']:.2f}%"
             )
 
         def step():
@@ -407,7 +427,7 @@ class Evaluator:
                 self.render_finish()
                 self.save_video(False, action_count=executed_action_count)
                 print_timing_summary()
-                return False
+                return False, build_timing_stats()
         # self._capture_replay_frame()
 
         def run_prompt(prompt: str | None, current_time_limit: float):
@@ -440,8 +460,8 @@ class Evaluator:
             self.save_video(task_success, action_count=executed_action_count)
             print_timing_summary()
             if not healthy:
-                return False
-            return task_success
+                return False, build_timing_stats()
+            return task_success, build_timing_stats()
         
         
         if len(prompts)>1:
@@ -472,7 +492,11 @@ class Evaluator:
                     transition_start_wall = time.perf_counter()
                     from transition_generation import transition_code_generation
                     transition_infer_start_wall = time.perf_counter()
-                    transition_code_generation(prompts[i+1])
+                    transition_code_generation(
+                        prompts[i+1],
+                        no_planning=no_planning,
+                        no_interpolation=no_interpolation,
+                    )
                     transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
                     transition_infer_total += transition_infer_elapsed
                     from transition_template import TransitionExpert
@@ -492,6 +516,7 @@ class Evaluator:
                         self.task.step_and_log = original_step_and_log
                     transition_elapsed = time.perf_counter() - transition_start_wall
                     transition_total += transition_elapsed
+                    transition_count += 1
                     print(
                         f"[Timing] transition to next prompt took {transition_elapsed:.3f}s "
                         f"(inference {transition_infer_elapsed:.3f}s)"
@@ -507,7 +532,7 @@ class Evaluator:
             self.save_video(True, filename_override=f"{combined_prompts[:35]}", action_count=executed_action_count)
             print_timing_summary()
 
-            return all_success
+            return all_success, build_timing_stats()
                     
         else:
             task_success = True
@@ -522,6 +547,6 @@ class Evaluator:
             prompt = prompt.replace(" ", "_").replace("/", "_")
             self.save_video(task_success, filename_override=f"{prompt}", action_count=executed_action_count)
             print_timing_summary()
-            return task_success
+            return task_success, build_timing_stats()
 
         

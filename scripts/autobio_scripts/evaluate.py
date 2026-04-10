@@ -25,6 +25,8 @@ def evaluate_task(
     time_limit: float,
     prompts: list[str] | None = None,
     use_transition_generation: bool = True,
+    no_planning: bool = False,
+    no_interpolation: bool = False,
 ):
     evaluator.task.reset(seed=seed)
     # evaluator.task.set_serializer(log_root="logs/xxxx", log_name=str(seed))
@@ -33,6 +35,52 @@ def evaluate_task(
         time_limit,
         prompts=prompts,
         use_transition_generation=use_transition_generation,
+        no_planning=no_planning,
+        no_interpolation=no_interpolation,
+    )
+
+
+def normalize_eval_result(raw_result):
+    if isinstance(raw_result, tuple) and len(raw_result) == 2:
+        success, timing = raw_result
+        if isinstance(timing, dict):
+            return bool(success), timing
+        return bool(success), None
+
+    if isinstance(raw_result, dict):
+        success = bool(raw_result.get("success", False))
+        timing = raw_result.get("timing")
+        if isinstance(timing, dict):
+            return success, timing
+        return success, None
+
+    return bool(raw_result), None
+
+
+def print_running_average_timing(timings: list[dict]):
+    if len(timings) == 0:
+        return
+
+    planning_avg = float(np.mean([t.get("transition_planning_avg_per_transition", 0.0) for t in timings]))
+    transition_avg = float(np.mean([t.get("transition_avg_per_transition", 0.0) for t in timings]))
+    episode_avg = float(np.mean([t.get("episode_total", 0.0) for t in timings]))
+    ratio_avg = float(np.mean([t.get("transition_ratio", 0.0) for t in timings]))
+    total_transitions = int(np.sum([t.get("transition_count", 0) for t in timings]))
+
+    planning_total = float(np.sum([t.get("transition_planning_total", 0.0) for t in timings]))
+    transition_total = float(np.sum([t.get("transition_total", 0.0) for t in timings]))
+    global_planning_avg = (planning_total / total_transitions) if total_transitions > 0 else 0.0
+    global_transition_avg = (transition_total / total_transitions) if total_transitions > 0 else 0.0
+
+    print(
+        f"[TimingAvg] episodes={len(timings)} | "
+        f"transitions={total_transitions} | "
+        f"avg planning/transition={planning_avg:.3f}s | "
+        f"avg transition/transition={transition_avg:.3f}s | "
+        f"global planning/transition={global_planning_avg:.3f}s | "
+        f"global transition/transition={global_transition_avg:.3f}s | "
+        f"avg episode total={episode_avg:.3f}s | "
+        f"avg transition ratio={ratio_avg:.2f}%"
     )
 
 _evaluator: "Evaluator"
@@ -40,6 +88,8 @@ _policy: "Policy"
 _prompts: list[str] | None = None
 _time_limit: float
 _use_transition_generation: bool
+_no_planning: bool
+_no_interpolation: bool
 _log_file_handle = None
 
 
@@ -83,6 +133,8 @@ def init_worker(
     time_limit: float,
     video_fps: int,
     use_transition_generation: bool,
+    no_planning: bool,
+    no_interpolation: bool,
     queue,
     prompts: list[str] | None = None,
 ):
@@ -94,13 +146,15 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
     _policy = make_policy(host, port)
     _prompts = prompts
     _time_limit = time_limit
     _use_transition_generation = use_transition_generation
+    _no_planning = no_planning
+    _no_interpolation = no_interpolation
 
 def step_worker(seed: int):
     return evaluate_task(
@@ -110,6 +164,8 @@ def step_worker(seed: int):
         _time_limit,
         _prompts,
         _use_transition_generation,
+        _no_planning,
+        _no_interpolation,
     )
 
 def parse_args():
@@ -134,6 +190,16 @@ def parse_args():
         default=True,
         help="Whether to run transition generation and execution between prompts",
     )
+    parser.add_argument(
+        "--no_planning",
+        action="store_true",
+        help="Skip transition planning/code generation; keep qpos retrieval and target-qpos restore generation",
+    )
+    parser.add_argument(
+        "--no_interpolation",
+        action="store_true",
+        help="Run retrieval/planning/codegen but skip final move_to_target_qpos in transition execute",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -146,6 +212,8 @@ if __name__ == "__main__":
     time_limit = args.time_limit
     render_device_ids = args.render_device_id.split(',')
     assert len(render_device_ids) > 0
+    success_results: list[float] = []
+    episode_timings: list[dict] = []
 
     if args.num_workers == 0:
         # Serial evaluation
@@ -155,17 +223,23 @@ if __name__ == "__main__":
         policy = make_policy(args.host, args.port)
         task = create_task(args.task)
         evaluator = Evaluator(task, image_history=args.image_history, video_fps=args.video_fps)
-        results = [
-            evaluate_task(
+        for seed in tqdm(seeds):
+            raw_result = evaluate_task(
                 evaluator,
                 policy,
                 seed,
                 time_limit,
                 prompts,
                 args.use_transition_generation,
+                args.no_planning,
+                args.no_interpolation,
             )
-            for seed in tqdm(seeds)
-        ]
+            success, timing = normalize_eval_result(raw_result)
+            success_results.append(float(success))
+            if timing is not None:
+                episode_timings.append(timing)
+            if args.num_episodes != 1 and len(episode_timings) > 0:
+                print_running_average_timing(episode_timings)
     else:
         # Parallel evaluation
         from concurrent.futures import ProcessPoolExecutor
@@ -186,15 +260,33 @@ if __name__ == "__main__":
                 time_limit,
                 args.video_fps,
                 args.use_transition_generation,
+                args.no_planning,
+                args.no_interpolation,
                 queue,
                 prompts,
             )
         ) as executor:
             for device_id in render_device_assignment:
                 queue.put(device_id)
-            results = list(tqdm(executor.map(step_worker, seeds), total=len(seeds), desc="Evaluating tasks"))
+            for raw_result in tqdm(executor.map(step_worker, seeds), total=len(seeds), desc="Evaluating tasks"):
+                success, timing = normalize_eval_result(raw_result)
+                success_results.append(float(success))
+                if timing is not None:
+                    episode_timings.append(timing)
+                if args.num_episodes != 1 and len(episode_timings) > 0:
+                    print_running_average_timing(episode_timings)
 
-    results = [float(r) for r in results]
+    results = success_results
+    if args.num_episodes != 1 and len(episode_timings) > 0:
+        print("[TimingAvg] Final average over all episodes:")
+        print_running_average_timing(episode_timings)
+        total_transitions = int(np.sum([t.get("transition_count", 0) for t in episode_timings]))
+        transition_total = float(np.sum([t.get("transition_total", 0.0) for t in episode_timings]))
+        final_transition_avg = (transition_total / total_transitions) if total_transitions > 0 else 0.0
+        print(
+            f"[TimingAvg] Final global transition avg duration: "
+            f"{final_transition_avg:.3f}s (total_transitions={total_transitions})"
+        )
 
     if args.save:
         import json

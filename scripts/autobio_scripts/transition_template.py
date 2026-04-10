@@ -115,31 +115,24 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        # step 1: open gripper to release the green object
+        # step 1: open gripper
         self.gripper_control(0)
 
-        # step 2: move EE 15cm along +z axis to clear the beige box height
+        # step 2: move EE 15cm along +z
         cur_pose = self.get_site_pose(self.data)
         end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.15), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
-        # step 3: move EE 20cm along +y axis to move towards the robot base side
+        # step 3: move EE 20cm along +x
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.20, 0.0), quat=cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.2, 0.0, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
-        # step 4: move EE 10cm along +x axis to move deeper into the scene away from camera
+        # step 4: move EE 20cm along +y
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.10, 0.0, 0.0), quat=cur_pose.quat)
-        path = self.interpolate(cur_pose, end_pose, 100)
-        self.path_follow(path)
-
-        # step 5: rotate EE -45 degrees around y-axis to align with stow configuration
-        cur_pose = self.get_site_pose(self.data)
-        target_quat = self.rotate_gripper(-45, 'y', cur_pose.quat)
-        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.2, 0.0), quat=cur_pose.quat)
         path = self.interpolate(cur_pose, end_pose, 100)
         self.path_follow(path)
 
