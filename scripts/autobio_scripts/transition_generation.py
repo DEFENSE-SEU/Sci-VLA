@@ -9,6 +9,7 @@ import json
 import re
 import textwrap
 from difflib import get_close_matches
+from typing import Any
 
 def file_to_data_url(path: str) -> str:
     """
@@ -106,18 +107,145 @@ def _get_response_text(resp) -> str:
     return "\n".join([c for c in chunks if c]).strip()
 
 
+def _get_chat_completion_text(resp) -> str:
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return ""
+
+    message = getattr(choices[0], "message", None)
+    if message is None and isinstance(choices[0], dict):
+        message = choices[0].get("message", {})
+
+    content = getattr(message, "content", None)
+    if content is None and isinstance(message, dict):
+        content = message.get("content", "")
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        chunks = []
+        for item in content:
+            if isinstance(item, dict):
+                item_text = item.get("text", "")
+            else:
+                item_text = getattr(item, "text", "")
+            if isinstance(item_text, str) and item_text:
+                chunks.append(item_text)
+        return "\n".join(chunks).strip()
+
+    return ""
+
+
+def _responses_input_to_chat_messages(request_input) -> list[dict[str, Any]]:
+    chat_messages: list[dict[str, Any]] = []
+    for entry in request_input or []:
+        role = entry.get("role", "user") if isinstance(entry, dict) else "user"
+        content_items = entry.get("content", []) if isinstance(entry, dict) else []
+        chat_content = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "input_text":
+                chat_content.append({"type": "text", "text": item.get("text", "")})
+            elif item_type == "input_image":
+                image_url = item.get("image_url")
+                if image_url:
+                    chat_content.append({"type": "image_url", "image_url": {"url": image_url}})
+        if chat_content:
+            chat_messages.append({"role": role, "content": chat_content})
+
+    return chat_messages
+
+
+def _should_fallback_to_chat(error: Exception) -> bool:
+    message = str(error).lower()
+    fallback_markers = [
+        "responses",
+        "response_format",
+        "unsupported",
+        "not support",
+        "not implemented",
+        "unknown",
+        "404",
+        "no route",
+        "attributeerror",
+    ]
+    return any(marker in message for marker in fallback_markers)
+
+
+def _build_generation_kwargs(
+    temperature: float | None,
+    top_p: float | None,
+    max_tokens: int | None,
+    timeout: float | None,
+) -> dict:
+    kwargs = {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if timeout is not None and timeout > 0:
+        kwargs["timeout"] = timeout
+    return kwargs
+
+
+def _normalize_backend_mode(backend_mode: str | None) -> str:
+    mode = (backend_mode or "auto").strip().lower()
+    if mode not in {"auto", "responses", "chat"}:
+        raise ValueError(f"Invalid backend mode: {backend_mode}")
+    return mode
+
+
 def _request_json_object(
     client: OpenAI,
     model_name: str,
     request_input,
     stage_name: str,
     max_attempts: int = 3,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    backend_mode: str = "auto",
 ) -> dict:
+    mode = _normalize_backend_mode(backend_mode)
+    use_chat_mode = mode == "chat"
     last_text = ""
     last_error = None
     for attempt in range(1, max_attempts + 1):
-        resp = client.responses.create(model=model_name, input=request_input)
-        text = _get_response_text(resp)
+        text = ""
+        try:
+            request_kwargs = _build_generation_kwargs(
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            if use_chat_mode:
+                messages = _responses_input_to_chat_messages(request_input)
+                resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    **request_kwargs,
+                )
+                text = _get_chat_completion_text(resp)
+            else:
+                resp = client.responses.create(model=model_name, input=request_input, **request_kwargs)
+                text = _get_response_text(resp)
+        except Exception as e:
+            if (not use_chat_mode) and mode == "auto" and _should_fallback_to_chat(e):
+                use_chat_mode = True
+                print(f"[{stage_name}] Responses API unavailable, fallback to chat.completions: {e}")
+                continue
+            last_error = e
+            print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: request failed: {e}")
+            continue
+
         if not text.strip():
             print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: empty model text response, retrying...")
             continue
@@ -141,10 +269,42 @@ def _request_text(
     request_input,
     stage_name: str,
     max_attempts: int = 3,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    backend_mode: str = "auto",
 ) -> str:
+    mode = _normalize_backend_mode(backend_mode)
+    use_chat_mode = mode == "chat"
     for attempt in range(1, max_attempts + 1):
-        resp = client.responses.create(model=model_name, input=request_input)
-        text = _get_response_text(resp)
+        text = ""
+        try:
+            request_kwargs = _build_generation_kwargs(
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            if use_chat_mode:
+                messages = _responses_input_to_chat_messages(request_input)
+                resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    **request_kwargs,
+                )
+                text = _get_chat_completion_text(resp)
+            else:
+                resp = client.responses.create(model=model_name, input=request_input, **request_kwargs)
+                text = _get_response_text(resp)
+        except Exception as e:
+            if (not use_chat_mode) and mode == "auto" and _should_fallback_to_chat(e):
+                use_chat_mode = True
+                print(f"[{stage_name}] Responses API unavailable, fallback to chat.completions: {e}")
+                continue
+            print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: request failed: {e}")
+            continue
+
         if text.strip():
             return text
         print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: empty model text response, retrying...")
@@ -351,7 +511,17 @@ def _fallback_find_qpos(db: dict | list, task_prompt: str, current_joint_pos: np
 
 
 def retrieve_target_qpos_with_agent(
-    client: OpenAI, model_name: str, task_prompt: str, current_joint_pos: np.ndarray
+    client: OpenAI,
+    model_name: str,
+    task_prompt: str,
+    current_joint_pos: np.ndarray,
+    *,
+    max_attempts: int = 3,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    backend_mode: str = "auto",
 ):
     qpos_db_path = Path("logs/lerobot_initial_qpos.json")
     if not qpos_db_path.exists():
@@ -365,7 +535,7 @@ def retrieve_target_qpos_with_agent(
     by_prompt = _build_task_prompt_index(qpos_db)
     task_prompt_list = list(by_prompt.keys())
 
-    retrieval_model = os.environ.get("MODEL_NAME", model_name)
+    retrieval_model = model_name
     retrieval_prompt = f"""
 You are a retrieval agent for robot transition initialization.
 
@@ -393,6 +563,12 @@ Rules:
             model_name=retrieval_model,
             request_input=[{"role": "user", "content": [{"type": "input_text", "text": retrieval_prompt}]}],
             stage_name="qpos-retrieval",
+            max_attempts=max_attempts,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            backend_mode=backend_mode,
         )
         print(retrieval_obj)
         requested_prompt = str(retrieval_obj.get("requested_task_prompt", task_prompt))
@@ -450,17 +626,69 @@ def transition_code_generation(
     task_prompt: str,
     no_planning: bool = False,
     no_interpolation: bool = False,
+    llm_config: dict | None = None,
 ):
-    base_url = os.environ.get('BASE_URL')
-    api_key = os.environ.get('API_KEY')
-    model_name = os.environ.get('MODEL_NAME')
-    client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-    )
+    llm_config = llm_config or {}
+
+    def _pick_config(key: str, env_key: str, default=None):
+        value = llm_config.get(key)
+        if value is None:
+            value = os.environ.get(env_key)
+        return default if value is None else value
+
+    def _to_optional_float(value, field: str):
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except Exception as e:
+            raise ValueError(f"Invalid {field}: {value}") from e
+
+    def _to_optional_int(value, field: str):
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except Exception as e:
+            raise ValueError(f"Invalid {field}: {value}") from e
+
+    base_url = _pick_config("base_url", "BASE_URL")
+    api_key = _pick_config("api_key", "API_KEY")
+    model_name = _pick_config("model_name", "MODEL_NAME")
+    temperature = _to_optional_float(_pick_config("temperature", "LLM_TEMPERATURE"), "temperature")
+    top_p = _to_optional_float(_pick_config("top_p", "LLM_TOP_P"), "top_p")
+    max_tokens = _to_optional_int(_pick_config("max_tokens", "LLM_MAX_TOKENS"), "max_tokens")
+    max_attempts = _to_optional_int(_pick_config("max_attempts", "LLM_MAX_ATTEMPTS", 3), "max_attempts")
+    timeout = _to_optional_float(_pick_config("timeout", "LLM_TIMEOUT"), "timeout")
+    backend_mode = _normalize_backend_mode(str(_pick_config("backend_mode", "LLM_BACKEND_MODE", "auto")))
+
+    if model_name is None or str(model_name).strip() == "":
+        raise ValueError("MODEL_NAME (or --llm-model-name) must be provided for transition generation")
+    if max_attempts is None:
+        max_attempts = 3
+
+    client_kwargs = {}
+    if api_key is not None:
+        client_kwargs["api_key"] = api_key
+    if base_url is not None:
+        client_kwargs["base_url"] = base_url
+    if timeout is not None and timeout > 0:
+        client_kwargs["timeout"] = timeout
+    client = OpenAI(**client_kwargs)
 
     current_joint_pos_arr = np.asarray(np.load('logs/current_joint.npy'), dtype=np.float64).reshape(-1)
-    target_joint_pos_arr = retrieve_target_qpos_with_agent(client, model_name, task_prompt, current_joint_pos_arr)
+    target_joint_pos_arr = retrieve_target_qpos_with_agent(
+        client,
+        model_name,
+        task_prompt,
+        current_joint_pos_arr,
+        max_attempts=max_attempts,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        backend_mode=backend_mode,
+    )
     target_joint_pos = str(target_joint_pos_arr.tolist())
     target_arm_qpos = target_joint_pos_arr[:6].tolist()
     target_gripper_state = float(target_joint_pos_arr[-1]) if target_joint_pos_arr.size > 6 else None
@@ -602,6 +830,12 @@ Output rules:
             ],
         }],
         stage_name="stage-1-planning",
+        max_attempts=max_attempts,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        backend_mode=backend_mode,
     )
     plan_steps = plan_obj.get("plan_steps", [])
     if not isinstance(plan_steps, list) or len(plan_steps) == 0:
@@ -643,6 +877,12 @@ Output rules:
             }
         ],
         stage_name="stage-2-codegen",
+        max_attempts=max_attempts,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        backend_mode=backend_mode,
     )
 
     execute_body = _extract_code_from_response(codegen_text)

@@ -1035,7 +1035,7 @@ _CONFIGS = [
         ),
         model=pi0_config.Pi0Config(pi05=True),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=150_000,
+        num_train_steps=100_000,
         wandb_enabled=False,
     ),
     TrainConfig(

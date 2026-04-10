@@ -27,6 +27,7 @@ def evaluate_task(
     use_transition_generation: bool = True,
     no_planning: bool = False,
     no_interpolation: bool = False,
+    llm_config: dict | None = None,
 ):
     evaluator.task.reset(seed=seed)
     # evaluator.task.set_serializer(log_root="logs/xxxx", log_name=str(seed))
@@ -37,6 +38,7 @@ def evaluate_task(
         use_transition_generation=use_transition_generation,
         no_planning=no_planning,
         no_interpolation=no_interpolation,
+        llm_config=llm_config,
     )
 
 
@@ -90,6 +92,7 @@ _time_limit: float
 _use_transition_generation: bool
 _no_planning: bool
 _no_interpolation: bool
+_llm_config: dict | None = None
 _log_file_handle = None
 
 
@@ -135,6 +138,7 @@ def init_worker(
     use_transition_generation: bool,
     no_planning: bool,
     no_interpolation: bool,
+    llm_config: dict | None,
     queue,
     prompts: list[str] | None = None,
 ):
@@ -146,7 +150,7 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _llm_config
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
     _policy = make_policy(host, port)
@@ -155,6 +159,7 @@ def init_worker(
     _use_transition_generation = use_transition_generation
     _no_planning = no_planning
     _no_interpolation = no_interpolation
+    _llm_config = llm_config
 
 def step_worker(seed: int):
     return evaluate_task(
@@ -166,6 +171,7 @@ def step_worker(seed: int):
         _use_transition_generation,
         _no_planning,
         _no_interpolation,
+        _llm_config,
     )
 
 def parse_args():
@@ -200,6 +206,21 @@ def parse_args():
         action="store_true",
         help="Run retrieval/planning/codegen but skip final move_to_target_qpos in transition execute",
     )
+    parser.add_argument("--llm-base-url", type=str, default=None, help="LLM base URL for transition generation")
+    parser.add_argument("--llm-model-name", type=str, default=None, help="LLM model name for transition generation")
+    parser.add_argument("--llm-api-key", type=str, default=None, help="LLM API key for transition generation")
+    parser.add_argument("--llm-temperature", type=float, default=None, help="LLM sampling temperature")
+    parser.add_argument("--llm-top-p", type=float, default=None, help="LLM sampling top-p")
+    parser.add_argument("--llm-max-tokens", type=int, default=None, help="LLM max output tokens")
+    parser.add_argument("--llm-max-attempts", type=int, default=None, help="Max retry attempts per LLM stage")
+    parser.add_argument("--llm-timeout", type=float, default=None, help="LLM request timeout in seconds")
+    parser.add_argument(
+        "--llm-backend-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "responses", "chat"],
+        help="LLM API mode: auto (responses then chat fallback), responses only, or chat only",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -211,6 +232,17 @@ if __name__ == "__main__":
     prompts = args.prompts.split(',') if args.prompts else None
     time_limit = args.time_limit
     render_device_ids = args.render_device_id.split(',')
+    llm_config = {
+        "base_url": args.llm_base_url,
+        "model_name": args.llm_model_name,
+        "api_key": args.llm_api_key,
+        "temperature": args.llm_temperature,
+        "top_p": args.llm_top_p,
+        "max_tokens": args.llm_max_tokens,
+        "max_attempts": args.llm_max_attempts,
+        "timeout": args.llm_timeout,
+        "backend_mode": args.llm_backend_mode,
+    }
     assert len(render_device_ids) > 0
     success_results: list[float] = []
     episode_timings: list[dict] = []
@@ -233,6 +265,7 @@ if __name__ == "__main__":
                 args.use_transition_generation,
                 args.no_planning,
                 args.no_interpolation,
+                llm_config,
             )
             success, timing = normalize_eval_result(raw_result)
             success_results.append(float(success))
@@ -262,6 +295,7 @@ if __name__ == "__main__":
                 args.use_transition_generation,
                 args.no_planning,
                 args.no_interpolation,
+                llm_config,
                 queue,
                 prompts,
             )

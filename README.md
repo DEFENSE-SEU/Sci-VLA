@@ -36,7 +36,7 @@ conda install ffmpeg=7.1.1 -c conda-forge
 cd third_party/openpi
 pip install uv
 uv pip install -e .
-uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai pytest chex
+uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai pytest chex vllm
 cp -r src/openpi/models_pytorch/transformers_replace/* ~/anaconda3/envs/scivla/lib/python3.11/site-packages/transformers
 ```
 
@@ -47,7 +47,6 @@ To generate long-horizon tasks, run:
 ```bash
 python scripts/autobio_scripts/centrifuge5910_tasks.py
 python scripts/autobio_scripts/thermal_cycler_tasks.py
-python scripts/autobio_scripts/cleaning_tasks.py
 ```
 
 Render camera view:
@@ -68,8 +67,8 @@ When you need to train specific task, add config in third_party/openpi/src/openp
 
 ```bash
 cd third_party/openpi
-python scripts/compute_norm_stats.py --config-name long_tasks_pi05-lora
-XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05-lora --exp-name long_tasks_pi05-lora_finetune
+python scripts/compute_norm_stats.py --config-name long_tasks_pi05
+XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05 --exp-name long_tasks_pi05_finetune
 ```
 
 ## Evaluation
@@ -78,32 +77,66 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05-lora 
 If you want to use pytorch model to evaluate tasks, converting the jax checkpoint to pytorch is needed:
 
 ```bash
-python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/long_tasks_pi05-lora/ --config_name long_tasks_pi05-lora --output_path checkpoints/long_tasks_pi05-lora_pytorch
+python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/long_tasks_pi05/ --config_name long_tasks_pi05 --output_path checkpoints/long_tasks_pi05_pytorch
 ```
 
-### Evaluate the model on simulations
-To evaluate the policy model, run:
+### Evaluate the policy model on simulations
+To evaluate the policy model, open a shell and run:
 
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks_pi05-lora' --policy.dir 'checkpoints/long_tasks_pi05-lora/...'
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks_pi05' --policy.dir 'checkpoints/long_tasks_pi05/long_tasks_pi05_finetune/100000/'
 ```
 
-then open another shell window and run:
+then open another shell and run evaluation:
 
 ```bash
-export BASE_URL=your_url
-export MODEL_NAME=your_model
-export API_KEY=your_api_key
+export BASE_URL="your_url"
+export MODEL_NAME="your_model"
+export API_KEY="your_api_key"
 
-
+# example usage
 python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910"
 
 python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler"
 ```
 
-## Star History
+### Evaluate the model using local VLM model (Qwen3.5)
 
-[![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/Sci-VLA&type=Date)](https://star-history.com/#DEFENSE-SEU/Sci-VLA&Date)
+Establish the policy model:
+```bash
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks_pi05' --policy.dir 'checkpoints/long_tasks_pi05/long_tasks_pi05_finetune/100000/'
+```
+
+```bash
+python -m vllm.entrypoints.openai.api_server \
+  --model ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B \
+  --served-model-name qwen3.5-9b \
+  --host 0.0.0.0 \
+  --port 9000
+```
+
+
+then open another shell window and run:
+
+```bash
+python ./scripts/autobio_scripts/evaluate.py \
+  --task "thermal_cycler_long_task_1" \
+  --time_limit 30 \
+  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
+  --llm-base-url http://0.0.0.0:9000/v1 \
+  --llm-model-name qwen3.5-9b \
+  --llm-api-key EMPTY \
+  --llm-temperature 0.2 \
+  --llm-top-p 0.9 \
+  --llm-max-tokens 4096 \
+  --llm-max-attempts 3 \
+  --llm-timeout 120 \
+  --llm-backend-mode auto
+```
+
+<!-- ## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/Sci-VLA&type=Date)](https://star-history.com/#DEFENSE-SEU/Sci-VLA&Date) -->
 
 ## Citation
 

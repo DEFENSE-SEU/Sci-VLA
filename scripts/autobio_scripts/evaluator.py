@@ -358,6 +358,7 @@ class Evaluator:
         use_transition_generation: bool = True,
         no_planning: bool = False,
         no_interpolation: bool = False,
+        llm_config: dict | None = None,
     ):
         if time_limit is None:
             time_limit = self.task.time_limit
@@ -496,6 +497,7 @@ class Evaluator:
                         prompts[i+1],
                         no_planning=no_planning,
                         no_interpolation=no_interpolation,
+                        llm_config=llm_config,
                     )
                     transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
                     transition_infer_total += transition_infer_elapsed
