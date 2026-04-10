@@ -10,6 +10,20 @@ import re
 import textwrap
 from difflib import get_close_matches
 from typing import Any
+from urllib.parse import urlparse
+
+
+def _sanitize_error_text(error: Exception, max_len: int = 500) -> str:
+    text = str(error)
+    # Replace massive data URLs in provider error payloads.
+    text = re.sub(
+        r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\\n\\r]+",
+        "<image-data-url-elided>",
+        text,
+    )
+    if len(text) > max_len:
+        return text[:max_len] + "...<truncated>"
+    return text
 
 def file_to_data_url(path: str) -> str:
     """
@@ -137,23 +151,38 @@ def _get_chat_completion_text(resp) -> str:
     return ""
 
 
-def _responses_input_to_chat_messages(request_input) -> list[dict[str, Any]]:
+def _responses_input_to_chat_messages(
+    request_input,
+    force_string_content: bool = False,
+) -> list[dict[str, Any]]:
     chat_messages: list[dict[str, Any]] = []
     for entry in request_input or []:
         role = entry.get("role", "user") if isinstance(entry, dict) else "user"
         content_items = entry.get("content", []) if isinstance(entry, dict) else []
         chat_content = []
+        text_chunks = []
         for item in content_items:
             if not isinstance(item, dict):
                 continue
             item_type = item.get("type")
             if item_type == "input_text":
-                chat_content.append({"type": "text", "text": item.get("text", "")})
+                text = item.get("text", "")
+                text_chunks.append(text)
+                if not force_string_content:
+                    chat_content.append({"type": "text", "text": text})
             elif item_type == "input_image":
-                image_url = item.get("image_url")
-                if image_url:
-                    chat_content.append({"type": "image_url", "image_url": {"url": image_url}})
-        if chat_content:
+                if force_string_content:
+                    # Strict backends may only accept string content for chat messages.
+                    text_chunks.append("[image omitted for text-only backend]")
+                else:
+                    image_url = item.get("image_url")
+                    if image_url:
+                        chat_content.append({"type": "image_url", "image_url": {"url": image_url}})
+        if force_string_content:
+            content = "\n".join([chunk for chunk in text_chunks if chunk]).strip()
+            if content:
+                chat_messages.append({"role": role, "content": content})
+        elif chat_content:
             chat_messages.append({"role": role, "content": chat_content})
 
     return chat_messages
@@ -175,11 +204,36 @@ def _should_fallback_to_chat(error: Exception) -> bool:
     return any(marker in message for marker in fallback_markers)
 
 
-def _build_generation_kwargs(
+def _should_retry_chat_with_string_content(error: Exception) -> bool:
+    message = str(error).lower()
+    markers = [
+        "input should be a valid string",
+        "string_type",
+        "validation errors",
+        "messages",
+        "content",
+    ]
+    return any(marker in message for marker in markers)
+
+
+def _should_disable_chat_response_format(error: Exception) -> bool:
+    message = str(error).lower()
+    markers = [
+        "response_format",
+        "json_object",
+        "unsupported",
+        "not support",
+        "unknown field",
+    ]
+    return any(marker in message for marker in markers)
+
+
+def _build_chat_generation_kwargs(
     temperature: float | None,
     top_p: float | None,
     max_tokens: int | None,
     timeout: float | None,
+    thinking_mode: str | None = None,
 ) -> dict:
     kwargs = {}
     if temperature is not None:
@@ -190,6 +244,40 @@ def _build_generation_kwargs(
         kwargs["max_tokens"] = max_tokens
     if timeout is not None and timeout > 0:
         kwargs["timeout"] = timeout
+    enable_thinking = _thinking_mode_to_bool(thinking_mode)
+    if enable_thinking is not None:
+        kwargs["extra_body"] = {
+            "chat_template_kwargs": {
+                "enable_thinking": enable_thinking,
+            }
+        }
+    return kwargs
+
+
+def _build_responses_generation_kwargs(
+    temperature: float | None,
+    top_p: float | None,
+    max_tokens: int | None,
+    timeout: float | None,
+    thinking_mode: str | None = None,
+) -> dict:
+    kwargs = {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if max_tokens is not None:
+        # Responses API expects max_output_tokens rather than max_tokens.
+        kwargs["max_output_tokens"] = max_tokens
+    if timeout is not None and timeout > 0:
+        kwargs["timeout"] = timeout
+    enable_thinking = _thinking_mode_to_bool(thinking_mode)
+    if enable_thinking is not None:
+        kwargs["extra_body"] = {
+            "chat_template_kwargs": {
+                "enable_thinking": enable_thinking,
+            }
+        }
     return kwargs
 
 
@@ -198,6 +286,46 @@ def _normalize_backend_mode(backend_mode: str | None) -> str:
     if mode not in {"auto", "responses", "chat"}:
         raise ValueError(f"Invalid backend mode: {backend_mode}")
     return mode
+
+
+def _is_local_base_url(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _resolve_backend_mode(mode: str, base_url: str | None) -> str:
+    if mode != "auto":
+        return mode
+    if _is_local_base_url(base_url):
+        return "chat"
+    return "responses"
+
+
+def _normalize_thinking_mode(thinking_mode: str | None) -> str:
+    mode = (thinking_mode or "auto").strip().lower()
+    if mode not in {"auto", "on", "off"}:
+        raise ValueError(f"Invalid thinking mode: {thinking_mode}")
+    return mode
+
+
+def _thinking_mode_to_bool(thinking_mode: str | None) -> bool | None:
+    mode = _normalize_thinking_mode(thinking_mode)
+    if mode == "auto":
+        return None
+    return mode == "on"
+
+
+def _strip_think_blocks(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<thinking>[\s\S]*?</thinking>", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def _request_json_object(
@@ -211,40 +339,73 @@ def _request_json_object(
     max_tokens: int | None = None,
     timeout: float | None = None,
     backend_mode: str = "auto",
+    thinking_mode: str = "auto",
 ) -> dict:
     mode = _normalize_backend_mode(backend_mode)
     use_chat_mode = mode == "chat"
+    force_chat_string_content = False
+    use_chat_response_format = True
     last_text = ""
     last_error = None
     for attempt in range(1, max_attempts + 1):
         text = ""
         try:
-            request_kwargs = _build_generation_kwargs(
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
-                timeout=timeout,
-            )
             if use_chat_mode:
-                messages = _responses_input_to_chat_messages(request_input)
-                resp = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    response_format={"type": "json_object"},
-                    **request_kwargs,
+                request_kwargs = _build_chat_generation_kwargs(
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    thinking_mode=thinking_mode,
                 )
+                messages = _responses_input_to_chat_messages(
+                    request_input,
+                    force_string_content=force_chat_string_content,
+                )
+                chat_kwargs = {
+                    "model": model_name,
+                    "messages": messages,
+                    **request_kwargs,
+                }
+                if use_chat_response_format:
+                    chat_kwargs["response_format"] = {"type": "json_object"}
+                resp = client.chat.completions.create(**chat_kwargs)
                 text = _get_chat_completion_text(resp)
             else:
+                request_kwargs = _build_responses_generation_kwargs(
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    thinking_mode=thinking_mode,
+                )
                 resp = client.responses.create(model=model_name, input=request_input, **request_kwargs)
                 text = _get_response_text(resp)
         except Exception as e:
+            if use_chat_mode and (not force_chat_string_content) and _should_retry_chat_with_string_content(e):
+                force_chat_string_content = True
+                print(f"[{stage_name}] Chat backend expects string content; retrying with text-only messages.")
+                continue
+            if use_chat_mode and use_chat_response_format and _should_disable_chat_response_format(e):
+                use_chat_response_format = False
+                print(f"[{stage_name}] Chat backend rejected response_format; retrying without it.")
+                continue
             if (not use_chat_mode) and mode == "auto" and _should_fallback_to_chat(e):
                 use_chat_mode = True
-                print(f"[{stage_name}] Responses API unavailable, fallback to chat.completions: {e}")
+                print(
+                    f"[{stage_name}] Responses API unavailable, "
+                    f"fallback to chat.completions: {_sanitize_error_text(e)}"
+                )
                 continue
             last_error = e
-            print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: request failed: {e}")
+            print(
+                f"[{stage_name}] Attempt {attempt}/{max_attempts}: "
+                f"request failed: {_sanitize_error_text(e)}"
+            )
             continue
+
+        if _normalize_thinking_mode(thinking_mode) == "off":
+            text = _strip_think_blocks(text)
 
         if not text.strip():
             print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: empty model text response, retrying...")
@@ -274,20 +435,26 @@ def _request_text(
     max_tokens: int | None = None,
     timeout: float | None = None,
     backend_mode: str = "auto",
+    thinking_mode: str = "auto",
 ) -> str:
     mode = _normalize_backend_mode(backend_mode)
     use_chat_mode = mode == "chat"
+    force_chat_string_content = False
     for attempt in range(1, max_attempts + 1):
         text = ""
         try:
-            request_kwargs = _build_generation_kwargs(
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
-                timeout=timeout,
-            )
             if use_chat_mode:
-                messages = _responses_input_to_chat_messages(request_input)
+                request_kwargs = _build_chat_generation_kwargs(
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    thinking_mode=thinking_mode,
+                )
+                messages = _responses_input_to_chat_messages(
+                    request_input,
+                    force_string_content=force_chat_string_content,
+                )
                 resp = client.chat.completions.create(
                     model=model_name,
                     messages=messages,
@@ -295,15 +462,35 @@ def _request_text(
                 )
                 text = _get_chat_completion_text(resp)
             else:
+                request_kwargs = _build_responses_generation_kwargs(
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    thinking_mode=thinking_mode,
+                )
                 resp = client.responses.create(model=model_name, input=request_input, **request_kwargs)
                 text = _get_response_text(resp)
         except Exception as e:
+            if use_chat_mode and (not force_chat_string_content) and _should_retry_chat_with_string_content(e):
+                force_chat_string_content = True
+                print(f"[{stage_name}] Chat backend expects string content; retrying with text-only messages.")
+                continue
             if (not use_chat_mode) and mode == "auto" and _should_fallback_to_chat(e):
                 use_chat_mode = True
-                print(f"[{stage_name}] Responses API unavailable, fallback to chat.completions: {e}")
+                print(
+                    f"[{stage_name}] Responses API unavailable, "
+                    f"fallback to chat.completions: {_sanitize_error_text(e)}"
+                )
                 continue
-            print(f"[{stage_name}] Attempt {attempt}/{max_attempts}: request failed: {e}")
+            print(
+                f"[{stage_name}] Attempt {attempt}/{max_attempts}: "
+                f"request failed: {_sanitize_error_text(e)}"
+            )
             continue
+
+        if _normalize_thinking_mode(thinking_mode) == "off":
+            text = _strip_think_blocks(text)
 
         if text.strip():
             return text
@@ -522,6 +709,7 @@ def retrieve_target_qpos_with_agent(
     max_tokens: int | None = None,
     timeout: float | None = None,
     backend_mode: str = "auto",
+    thinking_mode: str = "auto",
 ):
     qpos_db_path = Path("logs/lerobot_initial_qpos.json")
     if not qpos_db_path.exists():
@@ -569,6 +757,7 @@ Rules:
             max_tokens=max_tokens,
             timeout=timeout,
             backend_mode=backend_mode,
+            thinking_mode=thinking_mode,
         )
         print(retrieval_obj)
         requested_prompt = str(retrieval_obj.get("requested_task_prompt", task_prompt))
@@ -661,6 +850,14 @@ def transition_code_generation(
     max_attempts = _to_optional_int(_pick_config("max_attempts", "LLM_MAX_ATTEMPTS", 3), "max_attempts")
     timeout = _to_optional_float(_pick_config("timeout", "LLM_TIMEOUT"), "timeout")
     backend_mode = _normalize_backend_mode(str(_pick_config("backend_mode", "LLM_BACKEND_MODE", "auto")))
+    effective_backend_mode = _resolve_backend_mode(backend_mode, base_url)
+    thinking_mode = _normalize_thinking_mode(str(_pick_config("thinking", "LLM_THINKING", "auto")))
+
+    if backend_mode == "auto":
+        if effective_backend_mode == "chat":
+            print("[LLM] auto backend mode: local endpoint detected, using chat.completions")
+        else:
+            print("[LLM] auto backend mode: remote endpoint detected, using responses API")
 
     if model_name is None or str(model_name).strip() == "":
         raise ValueError("MODEL_NAME (or --llm-model-name) must be provided for transition generation")
@@ -687,7 +884,8 @@ def transition_code_generation(
         top_p=top_p,
         max_tokens=max_tokens,
         timeout=timeout,
-        backend_mode=backend_mode,
+        backend_mode=effective_backend_mode,
+        thinking_mode=thinking_mode,
     )
     target_joint_pos = str(target_joint_pos_arr.tolist())
     target_arm_qpos = target_joint_pos_arr[:6].tolist()
@@ -835,7 +1033,8 @@ Output rules:
         top_p=top_p,
         max_tokens=max_tokens,
         timeout=timeout,
-        backend_mode=backend_mode,
+        backend_mode=effective_backend_mode,
+        thinking_mode=thinking_mode,
     )
     plan_steps = plan_obj.get("plan_steps", [])
     if not isinstance(plan_steps, list) or len(plan_steps) == 0:
@@ -882,7 +1081,8 @@ Output rules:
         top_p=top_p,
         max_tokens=max_tokens,
         timeout=timeout,
-        backend_mode=backend_mode,
+        backend_mode=effective_backend_mode,
+        thinking_mode=thinking_mode,
     )
 
     execute_body = _extract_code_from_response(codegen_text)

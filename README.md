@@ -36,10 +36,10 @@ conda install ffmpeg=7.1.1 -c conda-forge
 cd third_party/openpi
 pip install uv
 uv pip install -e .
-uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai pytest chex vllm
-cp -r src/openpi/models_pytorch/transformers_replace/* ~/anaconda3/envs/scivla/lib/python3.11/site-packages/transformers
+uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai pytest chex
 ```
-
+<!-- sudo apt-get update
+sudo apt-get install -y libegl1 libgles2 libgl1 libglvnd0 libosmesa6 libosmesa6-dev -->
 
 ## Training Data Generation
 To generate long-horizon tasks, run:
@@ -73,10 +73,17 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05 --exp
 
 ## Evaluation
 
+### Extract initial qpos json file from lerobot dataset
+
+```bash
+python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id long_tasks 
+```
+
 ### Convert jax model to pytorch model
 If you want to use pytorch model to evaluate tasks, converting the jax checkpoint to pytorch is needed:
 
 ```bash
+cp -r src/openpi/models_pytorch/transformers_replace/* ~/anaconda3/envs/scivla/lib/python3.11/site-packages/transformers
 python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/long_tasks_pi05/ --config_name long_tasks_pi05 --output_path checkpoints/long_tasks_pi05_pytorch
 ```
 
@@ -111,7 +118,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_po
 python -m vllm.entrypoints.openai.api_server \
   --model ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B \
   --served-model-name qwen3.5-9b \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 9000
 ```
 
@@ -123,7 +130,7 @@ python ./scripts/autobio_scripts/evaluate.py \
   --task "thermal_cycler_long_task_1" \
   --time_limit 30 \
   --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
-  --llm-base-url http://0.0.0.0:9000/v1 \
+  --llm-base-url http://127.0.0.1:9000/v1 \
   --llm-model-name qwen3.5-9b \
   --llm-api-key EMPTY \
   --llm-temperature 0.2 \
@@ -131,12 +138,20 @@ python ./scripts/autobio_scripts/evaluate.py \
   --llm-max-tokens 4096 \
   --llm-max-attempts 3 \
   --llm-timeout 120 \
-  --llm-backend-mode auto
 ```
+
+
+
+
+
 
 <!-- ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/Sci-VLA&type=Date)](https://star-history.com/#DEFENSE-SEU/Sci-VLA&Date) -->
+
+
+
+
 
 ## Citation
 

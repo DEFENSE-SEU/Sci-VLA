@@ -1,15 +1,76 @@
 import os
-os.environ["MUJOCO_GL"] = "egl"
 from typing import TYPE_CHECKING
 from pathlib import Path
 from datetime import datetime
 import sys
+import subprocess
 
 from tqdm import tqdm
 import numpy as np
 
 if TYPE_CHECKING:
     from evaluator import Evaluator, Policy
+
+
+def resolve_mujoco_gl(cli_gl: str | None = None) -> str:
+    # Priority: CLI arg > existing MUJOCO_GL env > safe default.
+    backend = cli_gl or os.environ.get("MUJOCO_GL") or "auto"
+    backend = backend.lower()
+    if backend not in {"auto", "egl", "osmesa", "glfw"}:
+        raise ValueError(f"Unsupported MUJOCO_GL backend: {backend}")
+    if backend == "auto":
+        backend = probe_mujoco_gl_backend()
+    return backend
+
+
+def _probe_single_backend(backend: str) -> bool:
+    env = os.environ.copy()
+    env["MUJOCO_GL"] = backend
+    if backend == "egl":
+        env["PYOPENGL_PLATFORM"] = "egl"
+    elif backend == "osmesa":
+        env["PYOPENGL_PLATFORM"] = "osmesa"
+        env.pop("MUJOCO_EGL_DEVICE_ID", None)
+    else:
+        env.pop("PYOPENGL_PLATFORM", None)
+        env.pop("MUJOCO_EGL_DEVICE_ID", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import mujoco; print('ok')"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def probe_mujoco_gl_backend() -> str:
+    # Prefer GPU EGL first on servers, then CPU OSMesa, then glfw.
+    for backend in ["egl", "osmesa", "glfw"]:
+        if _probe_single_backend(backend):
+            print(f"[Render] Auto-selected MUJOCO_GL backend: {backend}")
+            return backend
+
+    raise RuntimeError(
+        "No usable MUJOCO_GL backend found (tried egl/osmesa/glfw). "
+        "Install server GL runtime libraries, then retry."
+    )
+
+
+def configure_mujoco_env(gl_backend: str, render_device_id: str | None = None):
+    os.environ["MUJOCO_GL"] = gl_backend
+    if gl_backend == "egl":
+        if render_device_id is not None:
+            os.environ["MUJOCO_EGL_DEVICE_ID"] = str(render_device_id)
+        os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    elif gl_backend == "osmesa":
+        # On headless servers, forcing OSMesa loader avoids inheriting an incompatible EGL platform.
+        os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+        os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
+    else:
+        # glfw path expects desktop GL/X11 stack; clear explicit PyOpenGL platform overrides.
+        os.environ.pop("PYOPENGL_PLATFORM", None)
+        os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
 
 def make_policy(host: str, port: int) -> "Policy":
     from openpi_client.websocket_client_policy import WebsocketClientPolicy
@@ -139,13 +200,13 @@ def init_worker(
     no_planning: bool,
     no_interpolation: bool,
     llm_config: dict | None,
+    mujoco_gl: str,
     queue,
     prompts: list[str] | None = None,
 ):
     import os
     render_device_id = queue.get()
-    os.environ["MUJOCO_GL"] = "egl"
-    os.environ["MUJOCO_EGL_DEVICE_ID"] = str(render_device_id)
+    configure_mujoco_env(mujoco_gl, str(render_device_id))
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
@@ -191,6 +252,13 @@ def parse_args():
     parser.add_argument("--video_fps", type=int, default=20, help="Replay video FPS")
     parser.add_argument("--log_path", type=str, default=None, help="Path to save evaluate stdout/stderr log")
     parser.add_argument(
+        "--mujoco-gl",
+        type=str,
+        default="auto",
+        choices=["auto", "egl", "osmesa", "glfw"],
+        help="MuJoCo rendering backend; auto probes egl -> osmesa -> glfw",
+    )
+    parser.add_argument(
         "--use-transition-generation",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -215,16 +283,24 @@ def parse_args():
     parser.add_argument("--llm-max-attempts", type=int, default=None, help="Max retry attempts per LLM stage")
     parser.add_argument("--llm-timeout", type=float, default=None, help="LLM request timeout in seconds")
     parser.add_argument(
+        "--llm-thinking",
+        type=str,
+        default="auto",
+        choices=["auto", "on", "off"],
+        help="LLM thinking mode for compatible models/backends",
+    )
+    parser.add_argument(
         "--llm-backend-mode",
         type=str,
         default="auto",
         choices=["auto", "responses", "chat"],
-        help="LLM API mode: auto (responses then chat fallback), responses only, or chat only",
+        help="LLM API mode: auto (local base_url->chat, remote->responses), or force responses/chat",
     )
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
+    mujoco_gl = resolve_mujoco_gl(args.mujoco_gl)
     setup_output_logging(args.log_path)
 
     master_rng = np.random.default_rng(args.seed)
@@ -241,6 +317,7 @@ if __name__ == "__main__":
         "max_tokens": args.llm_max_tokens,
         "max_attempts": args.llm_max_attempts,
         "timeout": args.llm_timeout,
+        "thinking": args.llm_thinking,
         "backend_mode": args.llm_backend_mode,
     }
     assert len(render_device_ids) > 0
@@ -249,7 +326,7 @@ if __name__ == "__main__":
 
     if args.num_workers == 0:
         # Serial evaluation
-        os.environ["MUJOCO_EGL_DEVICE_ID"] = render_device_ids[0]
+        configure_mujoco_env(mujoco_gl, render_device_ids[0])
         from task import create_task
         from evaluator import Evaluator
         policy = make_policy(args.host, args.port)
@@ -296,6 +373,7 @@ if __name__ == "__main__":
                 args.no_planning,
                 args.no_interpolation,
                 llm_config,
+                mujoco_gl,
                 queue,
                 prompts,
             )
