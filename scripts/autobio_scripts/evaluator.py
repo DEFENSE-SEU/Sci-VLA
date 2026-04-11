@@ -145,30 +145,36 @@ class Evaluator:
         self.video_out_path.mkdir(parents=True, exist_ok=True)
         self.video_fps = max(1, int(video_fps))
         self.replay_images = []
+        self.replay_left_images = []
         self.replay_times = []
 
     def _capture_replay_frame(self):
         if "image" not in self.cameras:
             return
 
-        frame = self.get_image("image")
-        if frame is None:
+        front_frame = self.get_image("image")
+        if front_frame is None:
             return
-        self.replay_images.append(frame.astype(np.uint8))
+
+        left_frame = self.get_image_by_camera_name("table_cam_left")
+
+        self.replay_images.append(front_frame.astype(np.uint8))
+        if left_frame is not None:
+            self.replay_left_images.append(left_frame.astype(np.uint8))
         self.replay_times.append(float(self.data.time))
 
-    def _resample_replay_frames(self):
-        if not self.replay_images:
+    def _resample_replay_frames(self, replay_images):
+        if not replay_images:
             return [], np.array([], dtype=np.int64)
 
-        if len(self.replay_images) == 1 or len(self.replay_times) != len(self.replay_images):
-            return list(self.replay_images), np.arange(len(self.replay_images), dtype=np.int64)
+        if len(replay_images) == 1 or len(self.replay_times) != len(replay_images):
+            return list(replay_images), np.arange(len(replay_images), dtype=np.int64)
 
         times = np.asarray(self.replay_times, dtype=np.float64)
         start_t = float(times[0])
         end_t = float(times[-1])
         if end_t <= start_t:
-            return [self.replay_images[0]], np.array([0], dtype=np.int64)
+            return [replay_images[0]], np.array([0], dtype=np.int64)
 
         dt = 1.0 / self.video_fps
         target_times = np.arange(start_t, end_t + 1e-9, dt, dtype=np.float64)
@@ -181,8 +187,37 @@ class Evaluator:
         sampled_indices = np.where(choose_right, right_idx, left_idx)
         sampled_indices = np.unique(sampled_indices)
 
-        sampled_frames = [self.replay_images[i] for i in sampled_indices]
+        sampled_frames = [replay_images[i] for i in sampled_indices]
         return sampled_frames, sampled_indices
+
+    def _build_video_filename(self, success: bool, filename_override: str | None, camera_suffix: str = ""):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        suffix_part = f"_{camera_suffix}" if camera_suffix else ""
+
+        if filename_override:
+            return f"{filename_override}{suffix_part}_{timestamp}.mp4"
+
+        task_name = self.task_info['prefix'].replace(" ", "_").replace("/", "_")
+        status = "success" if success else "failure"
+        return f"rollout_{task_name}_{timestamp}_{status}{suffix_part}.mp4"
+
+    def _write_video(self, frames, success: bool, filename_override: str | None, camera_suffix: str = ""):
+        if not frames:
+            return None
+
+        filename = self._build_video_filename(success, filename_override, camera_suffix)
+        video_path = self.video_out_path / filename
+        try:
+            imageio.mimwrite(
+                video_path,
+                [np.asarray(img) for img in frames],
+                fps=self.video_fps,
+            )
+            print(f"Video saved ({camera_suffix or 'front'}): {video_path}")
+            return video_path
+        except Exception as e:
+            print(f"Failed to save video ({camera_suffix or 'front'}): {e}")
+            return None
 
     def make_render_extra(self, scene: Task):
         extras = []
@@ -288,6 +323,7 @@ class Evaluator:
         self.history_states.append(self.data.qpos)
 
         self.replay_images = []
+        self.replay_left_images = []
         self.replay_times = []
         self._capture_replay_frame()
 
@@ -314,8 +350,8 @@ class Evaluator:
                 if sim_span > 0:
                     effective_capture_fps = (raw_frame_count - 1) / sim_span
 
-        sampled_frames, sampled_indices = self._resample_replay_frames()
-        output_frame_count = len(sampled_frames)
+        sampled_front_frames, sampled_indices = self._resample_replay_frames(self.replay_images)
+        output_frame_count = len(sampled_front_frames)
 
         print(
             f"[VideoDiag] raw_frames={raw_frame_count} | output_frames={output_frame_count} | "
@@ -327,28 +363,17 @@ class Evaluator:
             print(
                 f"[ActionDiag] actions={action_count}"
             )
-            
-        # 使用时间戳生成唯一文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒
-        
-        if filename_override:
-            filename = f"{filename_override}_{timestamp}.mp4"
+
+        self._write_video(sampled_front_frames, success, filename_override)
+
+        if len(self.replay_left_images) == raw_frame_count:
+            sampled_left_frames = [self.replay_left_images[i] for i in sampled_indices]
+            self._write_video(sampled_left_frames, success, filename_override, camera_suffix="left")
+        elif len(self.replay_left_images) > 0:
+            sampled_left_frames, _ = self._resample_replay_frames(self.replay_left_images)
+            self._write_video(sampled_left_frames, success, filename_override, camera_suffix="left")
         else:
-            task_name = self.task_info['prefix'].replace(" ", "_").replace("/", "_")
-            suffix = "success" if success else "failure"
-            filename = f"rollout_{task_name}_{timestamp}_{suffix}.mp4"
-        
-        # 保存视频
-        video_path = self.video_out_path / filename
-        try:
-            imageio.mimwrite(
-                video_path,
-                [np.asarray(img) for img in sampled_frames],
-                fps=self.video_fps,
-            )
-            print(f"Video saved: {video_path}")
-        except Exception as e:
-            print(f"Failed to save video: {e}") #
+            print("[VideoDiag] table_cam_left not found; skipping left camera video.")
 
     def evaluate(
         self,
