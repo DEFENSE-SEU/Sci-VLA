@@ -171,16 +171,25 @@ class Centrifuge_Eppendorf_5910(System):
         self.lid_opener = self.name2id(mujoco.mjtObj.mjOBJ_ACTUATOR, 'lid_opener')
         self.lid_pop_angle = np.deg2rad(30.0)
         self.lid_pop_qpos = max(self.lid_jntlimit[0].item(), self.lid_qpos_max - self.lid_pop_angle)
+        self.lid_closed_tol = 0.01
+        self.lid_pop_tol = 0.02
+        # The 5910 task scene repositions the lid near closed after Manager.reset().
+        self._reset_holds_closed_lid_target = (
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'centrifuge_50ml_screw') != -1
+        )
         self.rotor_joint = self.name2id(mujoco.mjtObj.mjOBJ_JOINT, 'rotor-body')
         self.lid_site = self.name2id(mujoco.mjtObj.mjOBJ_SITE, 'lid')
         self.base_body = self.name2id(mujoco.mjtObj.mjOBJ_BODY, 'world')
 
     def _reset(self, data: mujoco.MjData):
         lid_qpos = data.qpos[self.lid_qposadr]
-        self._bad_locking = lid_qpos < self.lid_qpos_max - 0.01
+        self._bad_locking = lid_qpos < self.lid_qpos_max - self.lid_closed_tol
         self._lid_release_active = False
-        data.ctrl[self.lid_opener] = self.lid_qpos_max
         data.eq_active[self.lid_lock] = 0 if self._bad_locking else 1
+        if self._bad_locking and not self._reset_holds_closed_lid_target:
+            data.ctrl[self.lid_opener] = lid_qpos
+        else:
+            data.ctrl[self.lid_opener] = self.lid_qpos_max
     
     def _update(self, data):
         lid_qpos = data.qpos[self.lid_qposadr]
@@ -189,15 +198,18 @@ class Centrifuge_Eppendorf_5910(System):
             self._lid_release_active = True
             data.eq_active[self.lid_lock] = 0
             data.ctrl[self.lid_opener] = self.lid_pop_qpos
+            return
 
         if self._lid_release_active:
             data.eq_active[self.lid_lock] = 0
-            data.ctrl[self.lid_opener] = self.lid_pop_qpos
-            if lid_qpos <= self.lid_pop_qpos + 0.02:
+            if lid_qpos <= self.lid_pop_qpos + self.lid_pop_tol:
+                self._lid_release_active = False
                 data.ctrl[self.lid_opener] = lid_qpos
+            else:
+                data.ctrl[self.lid_opener] = self.lid_pop_qpos
             return
 
-        if lid_qpos < self.lid_qpos_max - 0.01:
+        if lid_qpos < self.lid_qpos_max - self.lid_closed_tol:
             self._bad_locking = True
         else:
             self._bad_locking = False
@@ -205,6 +217,9 @@ class Centrifuge_Eppendorf_5910(System):
         if not self._bad_locking:
             data.eq_active[self.lid_lock] = 1
             data.ctrl[self.lid_opener] = self.lid_qpos_max
+        else:
+            data.eq_active[self.lid_lock] = 0
+            data.ctrl[self.lid_opener] = lid_qpos
             
 class Centrifuge_tiangen_tgear_mini(System):
     
