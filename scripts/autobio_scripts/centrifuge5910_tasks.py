@@ -166,6 +166,7 @@ class Centrifuge_5910(Centrifuge_Eppendorf_5910):
     def _reset(self, data):
         super()._reset(data)  
         self.fk_lever = FK(1, self.model, data, f'{self.local_prefix}body', f'{self.local_prefix}lid')
+        self.lid_open_button_site = self.model.site(f'{self.local_prefix}lid_open_button').id
 
     def fk(self, qpos: np.ndarray) -> Pose:
         return self.fk_lever.forward(qpos)  
@@ -221,6 +222,28 @@ class Centrifuge_5910(Centrifuge_Eppendorf_5910):
         res_pos, res_quat = np.zeros(3), np.zeros(4) 
         mujoco.mju_mulPose(res_pos, res_quat, sitepose.pos, sitepose.quat, rel_pos, rel_quat) 
         return Pose(res_pos, res_quat)  
+
+    def get_lid_open_button_pose(self, data: mujoco.MjData, mode: str = 'pre') -> Pose:
+        site_pos = data.site_xpos[self.lid_open_button_site]
+        site_mat = data.site_xmat[self.lid_open_button_site]
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, site_mat)
+
+        rel_quat = np.zeros(4)
+        mujoco.mju_axisAngle2Quat(rel_quat, [0.0, 1.0, 0.0], np.pi)
+        res_quat = np.zeros(4)
+        mujoco.mju_mulQuat(res_quat, quat, rel_quat)
+
+        match mode:
+            case 'pre':
+                rel_pos = np.array([0.0, 0.0, 0.08])
+            case 'press':
+                rel_pos = np.array([0.0, 0.0, 0.01])
+            case _:
+                raise ValueError(f"Unknown lid open button pose mode: {mode}")
+
+        res_pos = site_pos + rel_pos
+        return Pose(res_pos, res_quat)
 
     def get_eef_pose(self, data: mujoco.MjData, loc: str, mode: str='1/detach', random: bool=False) -> Pose:
         match loc: 
@@ -673,10 +696,23 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         for _ in range(300):
             self.step_and_log({})
 
+    def press_lid_open_button(self):
+        pre_pose = self.instrument.get_lid_open_button_pose(self.data, mode='pre')
+        press_pose = self.instrument.get_lid_open_button_pose(self.data, mode='press')
+        self.gripper_control(250)
+        self.move_to(pre_pose, num_steps=12)
+        self.move_to(press_pose, num_steps=8)
+        for _ in range(60):
+            self.step_and_log({})
+        self.move_to(pre_pose, num_steps=8)
+        for _ in range(120):
+            self.step_and_log({})
+
     def execute(self):
         self.arm.ik.initial_qpos = self.data.qpos[self.arm.jnt_span]
         match self.task:
             case 'open_centrifuge5910_lid':
+                self.press_lid_open_button()
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
