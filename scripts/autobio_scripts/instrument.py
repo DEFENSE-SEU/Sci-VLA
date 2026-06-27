@@ -176,10 +176,11 @@ class Centrifuge_Eppendorf_5910(System):
         self.base_body = self.name2id(mujoco.mjtObj.mjOBJ_BODY, 'world')
 
     def _reset(self, data: mujoco.MjData):
-        self._bad_locking = False
+        lid_qpos = data.qpos[self.lid_qposadr]
+        self._bad_locking = lid_qpos < self.lid_qpos_max - 0.01
         self._lid_release_active = False
         data.ctrl[self.lid_opener] = self.lid_qpos_max
-        self._update(data)
+        data.eq_active[self.lid_lock] = 0 if self._bad_locking else 1
     
     def _update(self, data):
         lid_qpos = data.qpos[self.lid_qposadr]

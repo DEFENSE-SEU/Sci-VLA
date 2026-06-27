@@ -131,10 +131,10 @@
         </body>
       </body>
       <!-- Lid release button: distinct from the screen START button. -->
-      <body name="lid_open_button" pos="0.25 -0.18 0.11">
+      <body name="lid_open_button" pos="0.25 -0.205 0.265">
         <joint name="lid_open_button_joint" type="slide" axis="0 0 1" range="-0.004 0" limited="true" damping="5" stiffness="1000" />
         <geom class="button" name="lid_open_button_geom" pos="0 0 0" />
-        <site name="lid_open_button" pos="0 0 0.006" size="0.014" type="sphere" rgba="1 0.55 0.05 0.45" />
+        <site name="lid_open_button" pos="0 0 0.006" size="0.009" type="sphere" rgba="1 0.55 0.05 0.45" />
       </body>
     </body>
   </worldbody>
