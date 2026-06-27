@@ -158,6 +158,9 @@ class Centrifuge_Eppendorf_5430(System):
             data.eq_active[self.lid_lock] = 1
 
 class Centrifuge_Eppendorf_5910(System):
+
+    def _configure(self):
+        self.lid_open_button = self.add_subsystem(FlatButton('lid_open_button'))
     
     def _reload(self, model: mujoco.MjModel):
         self.lid_lock = self.name2id(mujoco.mjtObj.mjOBJ_EQUALITY, 'lid-lock')
@@ -165,24 +168,42 @@ class Centrifuge_Eppendorf_5910(System):
         self.lid_qpos_max = model.jnt_range[self.lid_joint, 1].item()
         self.lid_qposadr = model.jnt_qposadr[self.lid_joint].item()
         self.lid_jntlimit = model.jnt_range[self.lid_joint]
+        self.lid_opener = self.name2id(mujoco.mjtObj.mjOBJ_ACTUATOR, 'lid_opener')
+        self.lid_pop_angle = np.deg2rad(30.0)
+        self.lid_pop_qpos = max(self.lid_jntlimit[0].item(), self.lid_qpos_max - self.lid_pop_angle)
         self.rotor_joint = self.name2id(mujoco.mjtObj.mjOBJ_JOINT, 'rotor-body')
         self.lid_site = self.name2id(mujoco.mjtObj.mjOBJ_SITE, 'lid')
         self.base_body = self.name2id(mujoco.mjtObj.mjOBJ_BODY, 'world')
 
     def _reset(self, data: mujoco.MjData):
         self._bad_locking = False
-        self._update(data)  # Delegate to _update
+        self._lid_release_active = False
+        data.ctrl[self.lid_opener] = self.lid_qpos_max
+        self._update(data)
     
     def _update(self, data):
         lid_qpos = data.qpos[self.lid_qposadr]
+
+        if self.lid_open_button.is_pressed:
+            self._lid_release_active = True
+            data.eq_active[self.lid_lock] = 0
+            data.ctrl[self.lid_opener] = self.lid_pop_qpos
+
+        if self._lid_release_active:
+            data.eq_active[self.lid_lock] = 0
+            data.ctrl[self.lid_opener] = self.lid_pop_qpos
+            if lid_qpos <= self.lid_pop_qpos + 0.02:
+                data.ctrl[self.lid_opener] = lid_qpos
+            return
+
         if lid_qpos < self.lid_qpos_max - 0.01:
-        # try to lock while lid is open
             self._bad_locking = True
         else:
             self._bad_locking = False
+
         if not self._bad_locking:
-        # lock when lid is closed
             data.eq_active[self.lid_lock] = 1
+            data.ctrl[self.lid_opener] = self.lid_qpos_max
             
 class Centrifuge_tiangen_tgear_mini(System):
     
