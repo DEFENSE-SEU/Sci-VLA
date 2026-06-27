@@ -130,24 +130,24 @@
           </body>
         </body>
       </body>
-      <!-- 打开按钮 - 位置在控制面板上 -->
-      <body name="open_button" pos="0.05 0.15 0.1">
-        <joint name="open_button_joint" type="slide" axis="0 0 1" range="0 0.005" limited="true" damping="5" stiffness="1000" />
-        <geom class="button" name="open_button_geom" />
-        <site name="open_button_site" pos="0 0 0.005" size="0.012" type="cylinder" rgba="0.2 0.8 0.2 1" />
+      <!-- Lid release button: distinct from the screen START button. -->
+      <body name="lid_open_button" pos="0.25 -0.18 0.11">
+        <joint name="lid_open_button_joint" type="slide" axis="0 0 1" range="-0.004 0" limited="true" damping="5" stiffness="1000" />
+        <geom class="button" name="lid_open_button_geom" pos="0 0 0" />
+        <site name="lid_open_button" pos="0 0 0.006" size="0.014" type="sphere" rgba="1 0.55 0.05 0.45" />
       </body>
     </body>
   </worldbody>
   <!-- 传感器，检测按钮按压 -->
   <sensor>
-    <touch name="button_sensor" site="open_button_site" />
+    <touch name="lid_open_button" site="lid_open_button" />
   </sensor>
   <equality>
     <joint name="lid-lock" joint1="lid" polycoef="1.94" active="false" />
   </equality>
   <!-- 执行器，控制盖子打开 -->
   <actuator>
-    <general name="lid_opener" joint="lid" gear="10" ctrlrange="0 1.94" forcerange="-50 50" />
+    <position name="lid_opener" joint="lid" kp="45" ctrlrange="0 1.94" forcerange="-80 80" />
   </actuator>
 
   <!--<actuator />-->
