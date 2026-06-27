@@ -363,6 +363,7 @@ class Centrifuge5910Manipulate(Task):
                 self.data.eq_active[self.instrument.lid_lock] = 0
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
+                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
@@ -385,6 +386,7 @@ class Centrifuge5910Manipulate(Task):
                 self.data.eq_active[self.instrument.lid_lock] = 0
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
+                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
@@ -417,6 +419,7 @@ class Centrifuge5910Manipulate(Task):
                 self.data.eq_active[self.instrument.lid_lock] = 0
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
+                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
@@ -551,6 +554,7 @@ class Centrifuge5910Manipulate(Task):
                 # 设置盖子关节到关闭位置
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.005  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
+                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
                 # 激活盖子锁定
                 self.data.eq_active[self.instrument.lid_lock] = 1
                 # 随机扰动机械臂位置
