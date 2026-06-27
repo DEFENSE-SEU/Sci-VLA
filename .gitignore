@@ -21,3 +21,4 @@ Machine/
 script_*.sh
 *.bak
 .superpowers/
+.worktrees/
