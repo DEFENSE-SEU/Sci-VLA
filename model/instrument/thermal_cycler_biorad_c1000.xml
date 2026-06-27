@@ -79,7 +79,7 @@
         <geom name="start-button-cap" class="button" type="capsule" size="0.008 0.002" pos="0 0 -0.001" 
               material="start-button" />
         <geom name="start-button-base" type="cylinder" size="0.007 0.001" pos="0 0 0.001" 
-              rgba="0.3 0.3 0.3 1" />
+              rgba="0.3 0.3 0.3 1" group="2" contype="0" conaffinity="0" />
         <site name="start-button-touch" type="sphere" size="0.009" pos="0 0 0" rgba="1 0 0 0.3" />
       </body>
       

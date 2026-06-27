@@ -42,33 +42,46 @@ uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manif
 sudo apt-get install -y libegl1 libgles2 libgl1 libglvnd0 libosmesa6 libosmesa6-dev -->
 
 ## Training Data Generation
-To generate long-horizon tasks, run:
+Generate raw expert demonstrations for each scene separately:
 
 ```bash
 python scripts/autobio_scripts/centrifuge5910_tasks.py
 python scripts/autobio_scripts/thermal_cycler_tasks.py
 ```
 
-Render camera view:
+By default, these commands write episode folders directly to:
+
+- `logs/centrifuge5910_tasks`
+- `logs/thermal_cycler_tasks`
+
+To change the number of episodes per sub-task or output directory:
 
 ```bash
-bash scripts/autobio_scripts/render_all.bash logs/
+python scripts/autobio_scripts/centrifuge5910_tasks.py --episodes 100 --log-root logs/centrifuge5910_tasks
+python scripts/autobio_scripts/thermal_cycler_tasks.py --episodes 100 --log-root logs/thermal_cycler_tasks
 ```
 
-Then, move all data contained within the sub-task folders (folders named by timestamp) into the `long_tasks` folder.
-Finally, convert `long_tasks` to lerobot data:
+Render camera views at 50 Hz:
 
 ```bash
-python scripts/convert.py --data-dir logs/long_tasks --repo-id long_tasks
+bash scripts/autobio_scripts/render_all.bash logs/centrifuge5910_tasks
+bash scripts/autobio_scripts/render_all.bash logs/thermal_cycler_tasks
+```
+
+Convert each scene to a separate LeRobot dataset:
+
+```bash
+python scripts/convert.py --data-dir logs/centrifuge5910_tasks --repo-id mani_centrifuge5910
+python scripts/convert.py --data-dir logs/thermal_cycler_tasks --repo-id mani_thermalcycler
 ```
 
 ## Fine-tuning
-When you need to train specific task, add config in third_party/openpi/src/openpi/training/config.py. (Config `long_tasks` and `long_tasks_pi05` have already included.)
+When you need to finetune a new specific task, add config in `third_party/openpi/src/openpi/training/config.py`.
 
 ```bash
 cd third_party/openpi
-python scripts/compute_norm_stats.py --config-name long_tasks_pi05
-XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05 --exp-name long_tasks_pi05_finetune
+python scripts/compute_norm_stats.py --config-name mani_centrifuge5910_pi05
+XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py mani_centrifuge5910_pi05 --exp-name mani_centrifuge5910_pi05_finetune
 ```
 
 ## Evaluation
@@ -76,7 +89,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py long_tasks_pi05 --exp
 ### Extract initial qpos json file from lerobot dataset
 
 ```bash
-python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id long_tasks 
+python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_centrifuge5910 
 ```
 
 ### Convert jax model to pytorch model
@@ -84,14 +97,14 @@ If you want to use pytorch model to evaluate tasks, converting the jax checkpoin
 
 ```bash
 cp -r src/openpi/models_pytorch/transformers_replace/* ~/anaconda3/envs/scivla/lib/python3.11/site-packages/transformers
-python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/long_tasks_pi05/ --config_name long_tasks_pi05 --output_path checkpoints/long_tasks_pi05_pytorch
+python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/mani_centrifuge5910_pi05/ --config_name mani_centrifuge5910_pi05 --output_path checkpoints/mani_centrifuge5910_pi05_pytorch
 ```
 
 ### Evaluate the policy model on simulations
 To evaluate the policy model, open a shell and run:
 
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks_pi05' --policy.dir 'checkpoints/long_tasks_pi05/long_tasks_pi05_finetune/100000/'
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_centrifuge5910_pi05' --policy.dir 'checkpoints/mani_centrifuge5910_pi05/mani_centrifuge5910_pi05_finetune/60000/'
 ```
 
 then open another shell and run evaluation:
@@ -111,7 +124,7 @@ python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1'
 
 Establish the policy model:
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'long_tasks_pi05' --policy.dir 'checkpoints/long_tasks_pi05/long_tasks_pi05_finetune/100000/'
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_centrifuge5910_pi05' --policy.dir 'checkpoints/mani_centrifuge5910_pi05/mani_centrifuge5910_pi05_finetune/100000/'
 ```
 
 ```bash
@@ -129,7 +142,7 @@ then open another shell window and run:
 python ./scripts/autobio_scripts/evaluate.py \
   --task "thermal_cycler_long_task_1" \
   --time_limit 30 \
-  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
+  --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" \
   --llm-base-url http://127.0.0.1:9000/v1 \
   --llm-model-name qwen3.5-9b \
   --llm-api-key EMPTY \
@@ -165,4 +178,3 @@ If you find Sci-VLA useful in your research, please cite the paper:
   year={2026}
 }
 ```
-

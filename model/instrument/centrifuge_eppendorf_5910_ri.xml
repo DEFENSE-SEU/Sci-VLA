@@ -76,7 +76,6 @@
         <geom class="collision" type="box" size="0.29593109 0.02106472 0.36919737" pos="0.00669231 0.01305942 0.02087301" quat="0.49807294 0.50168699 0.49849278 0.50173545" />
       </body>
       <body name="rotor-body" pos="0.07134309 0.0116669 0.20058534" quat="0.80993986 0 0 -0.58651293">
-        <joint name="rotor-body" type="hinge" axis="0 0 1" range="0 1" limited="true"/>
         <geom class="visual" mesh="rotor-body-visual-0" material="rotor-body-0" />
         <geom class="visual" mesh="rotor-body-visual-1" material="rotor-body-1" />
         <geom class="inertia" mesh="rotor-body-inertia" density="1000" />
@@ -84,11 +83,9 @@
         <geom class="collision" type="box" size="0.16315606 0.0081578 0.02871547" pos="0.00038151 0.00010916 -0.01821184" quat="-0.70637015 0 0 0.70784265" />
         <geom class="collision" type="cylinder" size="0.0345578 0.03003073" pos="-0.0000825 -0.00021007 -0.01738334" />
         <body name="rotor-bucket-0" pos="-0.09273635 0.09278435 -0.07515634" quat="-0.38268179 -0.00111962 0.002703 0.92387558">
-          <joint name="rotor-bucket-0" type="hinge" pos="-0.08583492 0.00000001 0.06834238" axis="1 -0 0" range="-1.5708 0" />
           <geom class="visual" mesh="rotor-bucket-visual-0" material="rotor-bucket-0" />
           <geom class="inertia" mesh="rotor-bucket-inertia" density="1000" />
           <body name="adapter-7x50-0" pos="0.00000012 0.00000003 -0.00166672" quat="0 0 -0 1">
-            <joint name="adapter-7x50-0" type="slide" axis="0 0 1" range="0 0.08" />
             <geom class="visual" mesh="adapter-7x50-visual-0" material="adapter-7x50-0" />
             <geom class="inertia" mesh="adapter-7x50-inertia" density="1000" /> 
             <geom type="cylinder" size="0.014 0.015" pos="0 0 0.01" 
@@ -97,21 +94,17 @@
           </body>
         </body>
         <body name="rotor-bucket-1" pos="-0.09278436 -0.09273635 -0.07515634" quat="0.92387558 0.002703 -0.00111962 -0.38268179">
-          <joint name="rotor-bucket-1" type="hinge" pos="-0.08583492 0.00000001 0.06834238" axis="1 -0 0" range="-1.5708 0" />
           <geom class="visual" mesh="rotor-bucket-visual-0" material="rotor-bucket-0" />
           <geom class="inertia" mesh="rotor-bucket-inertia" density="1000" />
           <body name="adapter-17x15-1" pos="0.0000679 0.00000008 -0.01166692" quat="1 0 -0 0">
-            <joint name="adapter-17x15-1" type="slide" axis="0 0 1" range="0 0.08" />
             <geom class="visual" mesh="adapter-17x15-visual-0" material="adapter-17x15-0" />
             <geom class="inertia" mesh="adapter-17x15-inertia" density="1000" />
           </body>
         </body>
         <body name="rotor-bucket-2" pos="0.09273635 -0.09278435 -0.07515634" quat="0.92387558 0.002703 0.00111962 0.38268179">
-          <joint name="rotor-bucket-2" type="hinge" pos="-0.08583492 0.00000001 0.06834238" axis="1 -0 0" range="-1.5708 0" />
           <geom class="visual" mesh="rotor-bucket-visual-0" material="rotor-bucket-0" />
           <geom class="inertia" mesh="rotor-bucket-inertia" density="1000" />
           <body name="adapter-7x50-1" pos="0.00006777 0.00000002 -0.00166672" quat="1 0 -0 -0">
-            <joint name="adapter-7x50-1" type="slide" axis="0 0 1" range="0 0.08" />
             <geom class="visual" mesh="adapter-7x50-visual-0" material="adapter-7x50-0" />
             <geom class="inertia" mesh="adapter-7x50-inertia" density="1000" />
             <geom type="cylinder" name="test_hole" size="0.014 0.015" pos="0 0 0.01" 
@@ -120,24 +113,26 @@
           </body>
         </body>
         <body name="rotor-bucket-3" pos="0.09278436 0.09273635 -0.07515634" quat="0.38268179 0.00111962 0.002703 0.92387558">
-          <joint name="rotor-bucket-3" type="hinge" pos="-0.08583492 0.00000001 0.06834238" axis="1 -0 0" range="-1.5708 0" />
           <geom class="visual" mesh="rotor-bucket-visual-0" material="rotor-bucket-0" />
           <geom class="inertia" mesh="rotor-bucket-inertia" density="1000" />
           <body name="adapter-17x15-0" pos="0 0.00000009 -0.01166692" quat="-0 0 -0 1">
-            <joint name="adapter-17x15-0" type="slide" axis="0 0 1" range="0 0.08" />
             <geom class="visual" mesh="adapter-17x15-visual-0" material="adapter-17x15-0" />
             <geom class="inertia" mesh="adapter-17x15-inertia" density="1000" />
           </body>
         </body>
       </body>
       <!-- Lid release button: distinct from the screen START button. -->
-      <body name="lid_open_button" pos="0.25 -0.205 0.265">
+      <body name="lid_open_button" pos="0.25 -0.205 0.305">
         <joint name="lid_open_button_joint" type="slide" axis="0 0 1" range="-0.004 0" limited="true" damping="5" stiffness="1000" />
         <geom class="button" name="lid_open_button_geom" pos="0 0 0" />
         <site name="lid_open_button" pos="0 0 0.006" size="0.009" type="sphere" rgba="1 0.55 0.05 0.45" />
       </body>
     </body>
   </worldbody>
+  <contact>
+    <exclude body1="body" body2="lid_open_button" />
+    <exclude body1="lid" body2="lid_open_button" />
+  </contact>
   <!-- 传感器，检测按钮按压 -->
   <sensor>
     <touch name="lid_open_button" site="lid_open_button" />

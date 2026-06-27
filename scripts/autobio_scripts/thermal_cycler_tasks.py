@@ -2,6 +2,7 @@ import numpy as np
 import mujoco
 mujoco.mj_loadPluginLibrary('./libmjlab.so.3.3.0')
 
+from pathlib import Path
 from kinematics import IK, Pose, slerp, FK
 from topp import Topp
 from task import Task, Expert, Manager, SCENE_ROOT
@@ -332,6 +333,11 @@ class ThermalCyclerManipulate(Task):
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
                 self.data.qpos[self.instrument.lever_qposadr] = self.instrument.lever_jntlimit[0]
+                knob_range = self.model.jnt_range[self.instrument.lid_force_knob_joint]
+                knob_tight_qpos = np.clip(np.pi / 2, knob_range[0], knob_range[1])
+                knob_dofadr = self.model.jnt_dofadr[self.instrument.lid_force_knob_joint]
+                self.data.qpos[self.instrument.lid_force_knob_qposadr] = knob_tight_qpos
+                self.data.qvel[knob_dofadr] = 0.0
                 mujoco.mj_kinematics(self.model, self.data)
                 prefix = 'screw loosen the knob of the thermal cycler'
             case "press_thermal_cycler_button":
@@ -572,7 +578,6 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             path = self.instrument.knob_path(self.data, mode='loosen')
             self.move_to(path[1], 5)
             self.gripper_control(100)
-            self.move_to(self.instrument.get_eef_pose(self.data, loc='knob', mode='detach'), 5)
         elif self.task == 'press_thermal_cycler_button':
             self.gripper_control(400)
             body_id = self.model.body("/thermal_cycler_biorad_c1000:start-button").id
@@ -589,22 +594,66 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
 
 ThermalCyclerManipulate.Expert = ThermalCyclerManipulateExpert
 
-if __name__ == "__main__":
-    from tqdm import trange
-    tasks = ["open_thermal_cycler_lid",
+DEFAULT_DATASET_TASKS = [
+    "open_thermal_cycler_lid",
     "place_pcrPlate_into_thermalCycler",
     "close_thermal_cycler_lid",
     "screw_tighten_knob",
     "press_thermal_cycler_button",
     "screw_loosen_knob",
-    "take_pcrPlate_from_thermalCycler"]
+    "take_pcrPlate_from_thermalCycler",
+]
 
+
+def generate_dataset(
+    episodes: int = 100,
+    log_root: str | Path = "logs/thermal_cycler_tasks",
+    tasks: list[str] | None = None,
+):
+    from tqdm import trange
+
+    if episodes <= 0:
+        raise ValueError("episodes must be positive")
+
+    selected_tasks = DEFAULT_DATASET_TASKS if tasks is None else tasks
+    log_root = Path(log_root)
+    log_root.mkdir(parents=True, exist_ok=True)
+
+    print(f"writing thermal cycler logs to: {log_root}")
     spec = ThermalCyclerManipulate.load()
     expert = ThermalCyclerManipulate.Expert(spec)
-    for task in tasks:
+    for task in selected_tasks:
         expert.task = task
-        print("processing task: ",task)
-        for i in trange(100):
+        print("processing task: ", task)
+        for i in trange(episodes):
             expert.reset(i)
-            expert.set_serializer()
+            expert.set_serializer(log_root=log_root, log_name=f"{task}_{i:04d}")
             expert.execute()
+
+
+def parse_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate thermal cycler expert demonstrations as a scene-level raw dataset."
+    )
+    parser.add_argument("--episodes", type=int, default=100, help="Episodes per task.")
+    parser.add_argument(
+        "--log-root",
+        type=Path,
+        default=Path("logs/thermal_cycler_tasks"),
+        help="Output directory containing episode folders directly.",
+    )
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        choices=DEFAULT_DATASET_TASKS,
+        default=None,
+        help="Optional subset of thermal cycler tasks to generate.",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    generate_dataset(episodes=args.episodes, log_root=args.log_root, tasks=args.tasks)

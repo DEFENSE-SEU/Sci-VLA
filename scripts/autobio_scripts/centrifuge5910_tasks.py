@@ -2,6 +2,7 @@ import numpy as np
 import mujoco
 mujoco.mj_loadPluginLibrary('./libmjlab.so.3.3.0')
 
+from pathlib import Path
 from kinematics import IK, Pose, slerp, mul_pose, neg_pose, FK
 from topp import Topp
 from task import Task, Expert, Manager, SCENE_ROOT
@@ -705,7 +706,13 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         for _ in range(60):
             self.step_and_log({})
         self.move_to(pre_pose, num_steps=8)
-        for _ in range(500):
+        clear_pose = Pose(pos=np.array([-0.2, 0.25, 1.35]), quat=pre_pose.quat)
+        self.move_to(clear_pose, num_steps=16)
+        if self.data.qpos[self.instrument.lid_qposadr] > self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
+            self.instrument._lid_release_active = True
+            self.data.eq_active[self.instrument.lid_lock] = 0
+            self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_pop_target_qpos
+        for _ in range(1600):
             self.step_and_log({})
             lid_qpos = self.data.qpos[self.instrument.lid_qposadr]
             if lid_qpos <= self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
@@ -717,6 +724,9 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         match self.task:
             case 'open_centrifuge5910_lid':
                 self.press_lid_open_button()
+                self.gripper_control(0)
+                self.instrument._lid_hold_active = True
+                self.instrument.lid_hold_qpos = self.instrument.lid_pop_qpos
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
@@ -737,6 +747,8 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 target_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='grip')
                 self.move_to(target_pose, num_steps=12)
                 self.gripper_control(240)
+                self.instrument._lid_hold_active = False
+                self.data.ctrl[self.instrument.lid_opener] = self.data.qpos[self.instrument.lid_qposadr]
 
                 path = self.instrument.lever_path(self.data, mode='open/full')
                 self.path_follow(path[:-1])
@@ -1007,22 +1019,66 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
 
 Centrifuge5910Manipulate.Expert = Centrifuge5910ManipulateExpert
 
-if __name__ == "__main__":
-    from tqdm import trange
-    tasks = ["open_centrifuge5910_lid",
+DEFAULT_DATASET_TASKS = [
+    "open_centrifuge5910_lid",
     "place_experimental_tube_into_centrifuge5910",
     "place_balance_tube_into_centrifuge5910",
     "close_centrifuge5910_lid",
     "press_centrifuge5910_button",
     "take_experimental_tube_from_centrifuge5910",
-    "take_balance_tube_from_centrifuge5910"]
+    "take_balance_tube_from_centrifuge5910",
+]
 
+
+def generate_dataset(
+    episodes: int = 100,
+    log_root: str | Path = "logs/centrifuge5910_tasks",
+    tasks: list[str] | None = None,
+):
+    from tqdm import trange
+
+    if episodes <= 0:
+        raise ValueError("episodes must be positive")
+
+    selected_tasks = DEFAULT_DATASET_TASKS if tasks is None else tasks
+    log_root = Path(log_root)
+    log_root.mkdir(parents=True, exist_ok=True)
+
+    print(f"writing centrifuge5910 logs to: {log_root}")
     spec = Centrifuge5910Manipulate.load()
     expert = Centrifuge5910Manipulate.Expert(spec)
-    for task in tasks:
+    for task in selected_tasks:
         expert.task = task
-        print("processing task: ",task)
-        for i in trange(100):
+        print("processing task: ", task)
+        for i in trange(episodes):
             expert.reset(i)
-            expert.set_serializer()
+            expert.set_serializer(log_root=log_root, log_name=f"{task}_{i:04d}")
             expert.execute()
+
+
+def parse_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate centrifuge5910 expert demonstrations as a scene-level raw dataset."
+    )
+    parser.add_argument("--episodes", type=int, default=100, help="Episodes per task.")
+    parser.add_argument(
+        "--log-root",
+        type=Path,
+        default=Path("logs/centrifuge5910_tasks"),
+        help="Output directory containing episode folders directly.",
+    )
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        choices=DEFAULT_DATASET_TASKS,
+        default=None,
+        help="Optional subset of centrifuge5910 tasks to generate.",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    generate_dataset(episodes=args.episodes, log_root=args.log_root, tasks=args.tasks)

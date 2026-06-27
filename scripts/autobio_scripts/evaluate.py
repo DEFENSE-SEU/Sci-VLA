@@ -88,6 +88,7 @@ def evaluate_task(
     use_transition_generation: bool = True,
     no_planning: bool = False,
     no_interpolation: bool = False,
+    control_fps: float = 50.0,
     llm_config: dict | None = None,
 ):
     evaluator.task.reset(seed=seed)
@@ -99,6 +100,7 @@ def evaluate_task(
         use_transition_generation=use_transition_generation,
         no_planning=no_planning,
         no_interpolation=no_interpolation,
+        control_fps=control_fps,
         llm_config=llm_config,
     )
 
@@ -153,6 +155,7 @@ _time_limit: float
 _use_transition_generation: bool
 _no_planning: bool
 _no_interpolation: bool
+_control_fps: float
 _llm_config: dict | None = None
 _log_file_handle = None
 
@@ -199,6 +202,7 @@ def init_worker(
     use_transition_generation: bool,
     no_planning: bool,
     no_interpolation: bool,
+    control_fps: float,
     llm_config: dict | None,
     mujoco_gl: str,
     queue,
@@ -211,7 +215,7 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _llm_config
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
     _policy = make_policy(host, port)
@@ -220,6 +224,7 @@ def init_worker(
     _use_transition_generation = use_transition_generation
     _no_planning = no_planning
     _no_interpolation = no_interpolation
+    _control_fps = control_fps
     _llm_config = llm_config
 
 def step_worker(seed: int):
@@ -232,6 +237,7 @@ def step_worker(seed: int):
         _use_transition_generation,
         _no_planning,
         _no_interpolation,
+        _control_fps,
         _llm_config,
     )
 
@@ -250,6 +256,12 @@ def parse_args():
     parser.add_argument("--prompts", type=str, default=None, help="Comma-separated list of prompts to execute sequentially")
     parser.add_argument("--time_limit", type=float, default=100, help="per task time limit")
     parser.add_argument("--video_fps", type=int, default=20, help="Replay video FPS")
+    parser.add_argument(
+        "--control_fps",
+        type=float,
+        default=50.0,
+        help="Policy action execution rate in Hz; render_all.bash generates 50Hz datasets",
+    )
     parser.add_argument("--log_path", type=str, default=None, help="Path to save evaluate stdout/stderr log")
     parser.add_argument(
         "--mujoco-gl",
@@ -342,6 +354,7 @@ if __name__ == "__main__":
                 args.use_transition_generation,
                 args.no_planning,
                 args.no_interpolation,
+                args.control_fps,
                 llm_config,
             )
             success, timing = normalize_eval_result(raw_result)
@@ -372,6 +385,7 @@ if __name__ == "__main__":
                 args.use_transition_generation,
                 args.no_planning,
                 args.no_interpolation,
+                args.control_fps,
                 llm_config,
                 mujoco_gl,
                 queue,

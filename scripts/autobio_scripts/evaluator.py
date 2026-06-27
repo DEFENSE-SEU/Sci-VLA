@@ -383,12 +383,23 @@ class Evaluator:
         use_transition_generation: bool = True,
         no_planning: bool = False,
         no_interpolation: bool = False,
+        control_fps: float = 50.0,
         llm_config: dict | None = None,
     ):
         if time_limit is None:
             time_limit = self.task.time_limit
 
         self.reset()
+        if control_fps <= 0:
+            raise ValueError(f"control_fps must be positive, got {control_fps}")
+        action_repeat_steps = max(1, int(round(1.0 / control_fps / self.model.opt.timestep)))
+        effective_control_fps = 1.0 / (action_repeat_steps * self.model.opt.timestep)
+        print(
+            f"[ControlDiag] requested_control_fps={control_fps:.3f} | "
+            f"action_repeat_steps={action_repeat_steps} | "
+            f"effective_control_fps={effective_control_fps:.3f} | "
+            f"timestep={self.model.opt.timestep:.6f}"
+        )
         episode_start_wall = time.perf_counter()
         transition_infer_total = 0.0
         transition_total = 0.0
@@ -470,7 +481,7 @@ class Evaluator:
                     self.data.ctrl[self.task_info['action_indices']] = action
                     executed_action_count += 1
                     self.history_states.append(self.data.qpos)
-                    for _ in range(10):
+                    for _ in range(action_repeat_steps):
                         healthy = step()
                         if not healthy:
                             return False
