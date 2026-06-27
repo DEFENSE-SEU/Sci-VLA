@@ -20,3 +20,4 @@ Machine/
 *.err
 script_*.sh
 *.bak
+.superpowers/
