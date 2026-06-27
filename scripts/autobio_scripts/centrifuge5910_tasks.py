@@ -236,7 +236,7 @@ class Centrifuge_5910(Centrifuge_Eppendorf_5910):
 
         match mode:
             case 'pre':
-                rel_pos = np.array([0.0, 0.0, 0.08])
+                rel_pos = np.array([0.0, 0.0, 0.15])
             case 'press':
                 rel_pos = np.array([0.0, 0.0, 0.01])
             case _:
@@ -439,8 +439,8 @@ class Centrifuge5910Manipulate(Task):
                     end_col=4
                     self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
 
-                self.data.eq_active[self.instrument.lid_lock] = 0
-                lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
+                self.data.eq_active[self.instrument.lid_lock] = 1
+                lid_qpos = self.instrument.lid_qpos_max
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
                 self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
@@ -705,8 +705,12 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         for _ in range(60):
             self.step_and_log({})
         self.move_to(pre_pose, num_steps=8)
-        for _ in range(120):
+        for _ in range(500):
             self.step_and_log({})
+            lid_qpos = self.data.qpos[self.instrument.lid_qposadr]
+            if lid_qpos <= self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
+                break
+        self.data.ctrl[self.instrument.lid_opener] = self.data.qpos[self.instrument.lid_qposadr]
 
     def execute(self):
         self.arm.ik.initial_qpos = self.data.qpos[self.arm.jnt_span]
