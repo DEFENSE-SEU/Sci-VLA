@@ -118,6 +118,15 @@ DatasetSchema=scivla_ur5e_single_arm
 ExternalStatsPath=~/.cache/huggingface/lerobot/mani_centrifuge5910/meta/stats.json
 ```
 
+Then run the LABVLA fine-tuning launcher after editing those variables in the script:
+
+```bash
+bash launch/finetune/train_labutopia.sh
+```
+
+If you prefer a direct invocation, use LABVLA's `scripts/train.py` with the same
+data root, repo id, schema, and stats settings from the launcher.
+
 ## Evaluation
 
 ### Extract initial qpos json file from lerobot dataset
