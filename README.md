@@ -118,7 +118,8 @@ DatasetSchema=scivla_ur5e_single_arm
 ExternalStatsPath=~/.cache/huggingface/lerobot/mani_centrifuge5910/meta/stats.json
 ```
 
-Then run the LABVLA fine-tuning launcher after editing those variables in the script:
+Also set `PretrainedCkpt` and the model/tokenizer paths at the top of the
+launcher. Then run the LABVLA fine-tuning launcher after editing those values:
 
 ```bash
 bash launch/finetune/train_labutopia.sh

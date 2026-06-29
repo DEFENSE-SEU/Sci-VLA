@@ -185,7 +185,6 @@ def print_running_average_timing(timings: list[dict]):
 
 _evaluator: "Evaluator"
 _policy: "Policy"
-_policy_backend: str
 _prompts: list[str] | None = None
 _time_limit: float
 _use_transition_generation: bool
@@ -252,10 +251,9 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _policy_backend, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
-    _policy_backend = policy_backend
     _policy = make_policy(host, port, policy_backend)
     _prompts = prompts
     _time_limit = time_limit

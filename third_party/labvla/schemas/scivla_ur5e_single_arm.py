@@ -30,6 +30,9 @@ _SCHEMA = SingleArmBlueprint(
     gripper_semantic="position",
 ).build()
 
+# SingleArmBlueprint normalizes source camera names. Sci-VLA's converted
+# LeRobot columns intentionally contain slash-style keys, so restore them after
+# build while keeping the blueprint-derived state/action layout.
 SCHEMA = replace(
     _SCHEMA,
     image_mapping={

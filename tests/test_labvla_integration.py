@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LABVLA_ROOT = ROOT / "third_party" / "labvla"
@@ -37,9 +39,6 @@ def test_scivla_ur5e_schema_matches_current_dataset_layout():
         "observation/wrist_image": "observation.images.image1",
         "observation/wrist_image_2": "observation.images.image2",
     }
-
-
-import numpy as np
 
 
 def load_evaluate_module():
