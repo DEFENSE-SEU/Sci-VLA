@@ -72,11 +72,46 @@ def configure_mujoco_env(gl_backend: str, render_device_id: str | None = None):
         os.environ.pop("PYOPENGL_PLATFORM", None)
         os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
 
-def make_policy(host: str, port: int) -> "Policy":
+POLICY_BACKENDS = ("openpi", "labvla")
+
+
+def prepare_policy_observation(obs: dict, policy_backend: str) -> dict:
+    if policy_backend == "openpi":
+        return obs
+
+    if policy_backend != "labvla":
+        raise ValueError(f"Unsupported policy backend: {policy_backend}")
+
+    required_keys = [
+        "observation/state",
+        "observation/image",
+        "observation/wrist_image",
+        "observation/wrist_image_2",
+    ]
+    missing = [key for key in required_keys if key not in obs or obs[key] is None]
+    if missing:
+        raise ValueError(
+            "LABVLA policy backend requires observation keys "
+            f"{required_keys}; missing {missing}"
+        )
+
+    return {
+        **obs,
+        "state": obs["observation/state"],
+        "camera_1_rgb": obs["observation/image"],
+        "camera_2_rgb": obs["observation/wrist_image"],
+        "camera_3_rgb": obs["observation/wrist_image_2"],
+    }
+
+
+def make_policy(host: str, port: int, policy_backend: str = "openpi") -> "Policy":
     from openpi_client.websocket_client_policy import WebsocketClientPolicy
     ws_policy = WebsocketClientPolicy(host, port)
+
     def policy_fn(obs: dict) -> np.ndarray:
-        return ws_policy.infer(obs)['actions']
+        request_obs = prepare_policy_observation(obs, policy_backend)
+        return ws_policy.infer(request_obs)["actions"]
+
     return policy_fn
 
 def evaluate_task(
@@ -150,6 +185,7 @@ def print_running_average_timing(timings: list[dict]):
 
 _evaluator: "Evaluator"
 _policy: "Policy"
+_policy_backend: str
 _prompts: list[str] | None = None
 _time_limit: float
 _use_transition_generation: bool
@@ -195,6 +231,7 @@ def setup_output_logging(log_path: str | None) -> Path:
 def init_worker(
     host: str,
     port: int,
+    policy_backend: str,
     task_name: str,
     image_history: int,
     time_limit: float,
@@ -215,10 +252,11 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config
+    global _evaluator, _policy, _policy_backend, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
-    _policy = make_policy(host, port)
+    _policy_backend = policy_backend
+    _policy = make_policy(host, port, policy_backend)
     _prompts = prompts
     _time_limit = time_limit
     _use_transition_generation = use_transition_generation
@@ -246,6 +284,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a policy using the WebSocket client.")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket server host")
     parser.add_argument("--port", type=int, default=8000, help="WebSocket server port")
+    parser.add_argument(
+        "--policy-backend",
+        type=str,
+        default="openpi",
+        choices=POLICY_BACKENDS,
+        help="Policy websocket payload adapter to use: openpi keeps current keys; labvla maps Sci-VLA keys to LABVLA camera/state keys.",
+    )
     parser.add_argument("--task", type=str, default="pickup", help="Task name")
     parser.add_argument("--num_episodes", type=int, default=20, help="Number of episodes to evaluate")
     parser.add_argument("--image_history", type=int, default=0, help="Image history for the policy")
@@ -341,7 +386,7 @@ if __name__ == "__main__":
         configure_mujoco_env(mujoco_gl, render_device_ids[0])
         from task import create_task
         from evaluator import Evaluator
-        policy = make_policy(args.host, args.port)
+        policy = make_policy(args.host, args.port, args.policy_backend)
         task = create_task(args.task)
         evaluator = Evaluator(task, image_history=args.image_history, video_fps=args.video_fps)
         for seed in tqdm(seeds):
@@ -378,6 +423,7 @@ if __name__ == "__main__":
             initargs=(
                 args.host,
                 args.port,
+                args.policy_backend,
                 args.task,
                 args.image_history,
                 time_limit,
