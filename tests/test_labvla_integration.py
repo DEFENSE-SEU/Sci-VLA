@@ -108,3 +108,21 @@ def test_prepare_policy_observation_rejects_missing_labvla_camera():
         assert "observation/wrist_image" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_parse_args_defaults_to_openpi_backend(monkeypatch):
+    evaluate = load_evaluate_module()
+    monkeypatch.setattr(sys, "argv", ["evaluate.py"])
+
+    args = evaluate.parse_args()
+
+    assert args.policy_backend == "openpi"
+
+
+def test_parse_args_accepts_labvla_backend(monkeypatch):
+    evaluate = load_evaluate_module()
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", "--policy-backend", "labvla"])
+
+    args = evaluate.parse_args()
+
+    assert args.policy_backend == "labvla"
