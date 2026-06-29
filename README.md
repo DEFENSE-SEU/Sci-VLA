@@ -38,6 +38,17 @@ pip install uv
 uv pip install -e .
 uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai pytest chex
 ```
+
+For LABVLA comparison experiments, create the LABVLA environment separately:
+
+```bash
+conda create -n labvla python=3.10 -y
+conda activate labvla
+cd third_party/labvla
+pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126
+pip install flash_attn==2.8.3 --no-build-isolation
+pip install -r requirements.txt
+```
 <!-- sudo apt-get update
 sudo apt-get install -y libegl1 libgles2 libgl1 libglvnd0 libosmesa6 libosmesa6-dev -->
 
@@ -84,6 +95,29 @@ python scripts/compute_norm_stats.py --config-name mani_centrifuge5910_pi05
 XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py mani_centrifuge5910_pi05 --exp-name mani_centrifuge5910_pi05_finetune
 ```
 
+### LABVLA fine-tuning
+
+Sci-VLA UR5e demonstrations use the LABVLA schema `scivla_ur5e_single_arm`.
+The existing `scripts/convert.py` output can be reused directly.
+
+```bash
+cd third_party/labvla
+python -m data_process stats \
+  --dataset ~/.cache/huggingface/lerobot/mani_centrifuge5910 \
+  --schema scivla_ur5e_single_arm
+```
+
+Use LABVLA's training launcher or `scripts/train.py` with the Sci-VLA repo id,
+the LeRobot cache root, and `DatasetSchema=scivla_ur5e_single_arm`. For example,
+set the launcher variables to:
+
+```bash
+DataRoot=~/.cache/huggingface/lerobot
+RepoIds=mani_centrifuge5910
+DatasetSchema=scivla_ur5e_single_arm
+ExternalStatsPath=~/.cache/huggingface/lerobot/mani_centrifuge5910/meta/stats.json
+```
+
 ## Evaluation
 
 ### Extract initial qpos json file from lerobot dataset
@@ -118,6 +152,31 @@ export API_KEY="your_api_key"
 python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910"
 
 python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler"
+```
+
+### Evaluate LABVLA on simulations
+
+Start a LABVLA websocket server from the LABVLA environment:
+
+```bash
+cd third_party/labvla
+python deployment/serve_labvla.py \
+  --pretrained_path /path/to/labvla/checkpoint \
+  --port 8000 \
+  --device cuda \
+  --training_repo_id mani_centrifuge5910
+```
+
+Then run Sci-VLA evaluation with the LABVLA observation adapter:
+
+```bash
+python ./scripts/autobio_scripts/evaluate.py \
+  --policy-backend labvla \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --task 'centrifuge5910_long_task_1' \
+  --time_limit 30 \
+  --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910"
 ```
 
 ### Evaluate the model using local VLM model (Qwen3.5)
