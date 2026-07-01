@@ -147,11 +147,24 @@ class Evaluator:
         self.replay_images = []
         self.replay_left_images = []
         self.replay_times = []
+        self._next_replay_capture_time = 0.0
 
-    def _capture_replay_frame(self):
+    def _update_render_scene(self):
+        self.renderer.update_scene(self.data)
+        if self.render_extra is not None:
+            self.render_extra(self.renderer.scene, self.renderer._mjr_context)
+
+    def _capture_replay_frame(self, force: bool = False):
+        current_time = float(self.data.time)
+        capture_interval = 1.0 / self.video_fps
+        next_capture_time = getattr(self, "_next_replay_capture_time", current_time)
+        if not force and current_time + 1e-9 < next_capture_time:
+            return
+
         if "image" not in self.cameras:
             return
 
+        self._update_render_scene()
         front_frame = self.get_image("image")
         if front_frame is None:
             return
@@ -161,7 +174,8 @@ class Evaluator:
         self.replay_images.append(front_frame.astype(np.uint8))
         if left_frame is not None:
             self.replay_left_images.append(left_frame.astype(np.uint8))
-        self.replay_times.append(float(self.data.time))
+        self.replay_times.append(current_time)
+        self._next_replay_capture_time = current_time + capture_interval
 
     def _resample_replay_frames(self, replay_images):
         if not replay_images:
@@ -270,9 +284,7 @@ class Evaluator:
         return front_view, side_view
     
     def get_images(self):
-        self.renderer.update_scene(self.data)
-        if self.render_extra is not None:
-            self.render_extra(self.renderer.scene, self.renderer._mjr_context)
+        self._update_render_scene()
         return {
             "observation/image": self.get_image("image"),
             "observation/wrist_image": self.get_image("wrist_image"),
@@ -325,7 +337,8 @@ class Evaluator:
         self.replay_images = []
         self.replay_left_images = []
         self.replay_times = []
-        self._capture_replay_frame()
+        self._next_replay_capture_time = float(self.data.time)
+        self._capture_replay_frame(force=True)
 
     def save_video(self, success: bool, filename_override: str | None = None, action_count: int | None = None): #
         if not self.replay_images:
@@ -385,6 +398,10 @@ class Evaluator:
         no_interpolation: bool = False,
         control_fps: float = 50.0,
         llm_config: dict | None = None,
+        use_task_judge: bool = False,
+        max_prompt_retries: int = 1,
+        judge_confidence_threshold: float = 0.6,
+        judge_on_error: str = "fail",
     ):
         if time_limit is None:
             time_limit = self.task.time_limit
@@ -405,7 +422,7 @@ class Evaluator:
         transition_total = 0.0
         transition_count = 0
         executed_action_count = 0
-        settle_duration = 2.0
+        settle_duration = 0.0
 
         def build_timing_stats():
             episode_total = time.perf_counter() - episode_start_wall
@@ -503,11 +520,88 @@ class Evaluator:
         
         if len(prompts)>1:
             all_success = True
+            max_prompt_retries = max(0, int(max_prompt_retries))
+
+            def save_transition_state(prompt_index: int, attempt_index: int):
+                current_view, current_side_view = self.get_transition_views()
+                logs_dir = pathlib.Path("logs")
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                judgement_dir = logs_dir / "task_judgement_images"
+                judgement_dir.mkdir(parents=True, exist_ok=True)
+
+                front_path = judgement_dir / f"prompt_{prompt_index:02d}_attempt_{attempt_index:02d}_front.png"
+                side_path = judgement_dir / f"prompt_{prompt_index:02d}_attempt_{attempt_index:02d}_side.png"
+
+                if current_view is not None:
+                    imageio.imwrite('logs/current_view.png', current_view)
+                    imageio.imwrite(front_path, current_view)
+                if current_side_view is not None:
+                    imageio.imwrite('logs/current_side_view.png', current_side_view)
+                    imageio.imwrite(side_path, current_side_view)
+                current_joint_pos = self.data.qpos[range(self.model.joint('/ur:shoulder_pan').qposadr.item(), self.model.joint('/ur:shoulder_pan').qposadr.item() + 6)]
+                np.save('logs/current_joint.npy', current_joint_pos)
+                return front_path, side_path
+
+            def execute_transition_to(target_prompt: str, timing_label: str):
+                nonlocal transition_infer_total, transition_total, transition_count
+                if not use_transition_generation:
+                    print(f"[Transition] Skipped transition generation to {timing_label} (disabled by flag).")
+                    return
+
+                transition_start_wall = time.perf_counter()
+                from transition_generation import transition_code_generation, validate_qpos_interpolation_path
+                transition_infer_start_wall = time.perf_counter()
+                ur_joint_start = self.model.joint('/ur:shoulder_pan').qposadr.item()
+                ur_jnt_span = range(ur_joint_start, ur_joint_start + 6)
+
+                def qpos_path_validator(candidate_qpos, *, selected_index: int):
+                    return validate_qpos_interpolation_path(
+                        self.model,
+                        self.data,
+                        ur_jnt_span,
+                        candidate_qpos,
+                    )
+
+                transition_code_generation(
+                    target_prompt,
+                    no_planning=no_planning,
+                    no_interpolation=no_interpolation,
+                    llm_config=llm_config,
+                    target_top_k=3,
+                    qpos_path_validator=qpos_path_validator,
+                )
+                transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
+                transition_infer_total += transition_infer_elapsed
+                from transition_template import TransitionExpert
+                expert = TransitionExpert(self.model, self.data, self.task)
+                original_step_and_log = self.task.step_and_log
+
+                def step_and_log_with_capture(info: dict):
+                    original_step_and_log(info)
+                    self._capture_replay_frame()
+
+                self.task.step_and_log = step_and_log_with_capture
+                try:
+                    self._capture_replay_frame()
+                    expert.execute()
+                    self._capture_replay_frame()
+                finally:
+                    self.task.step_and_log = original_step_and_log
+                transition_elapsed = time.perf_counter() - transition_start_wall
+                transition_total += transition_elapsed
+                transition_count += 1
+                print(
+                    f"[Timing] transition to {timing_label} took {transition_elapsed:.3f}s "
+                    f"(inference {transition_infer_elapsed:.3f}s)"
+                )
             
             # 多 prompt 逻辑
-            for i in range(len(prompts)):
-                prompt = prompts[i]
-                print(f"Executing prompt: {prompt}")
+            prompt_index = 0
+            attempt_counts = [0 for _ in prompts]
+            while prompt_index < len(prompts):
+                prompt = prompts[prompt_index]
+                attempt_index = attempt_counts[prompt_index]
+                print(f"Executing prompt: {prompt} (attempt {attempt_index + 1})")
                 self.task_info['prefix'] = prompt
                 # task_nums = len(prompts)
                 healthy = run_prompt(prompt, time_limit)
@@ -517,50 +611,93 @@ class Evaluator:
                     failed_prompt = prompt
                     break
 
-                current_view, current_side_view = self.get_transition_views()
-                if current_view is not None:
-                    imageio.imwrite('logs/current_view.png', current_view)
-                if current_side_view is not None:
-                    imageio.imwrite('logs/current_side_view.png', current_side_view)
-                current_joint_pos = self.data.qpos[range(self.model.joint('/ur:shoulder_pan').qposadr.item(), self.model.joint('/ur:shoulder_pan').qposadr.item() + 6)]
-                np.save('logs/current_joint.npy', current_joint_pos)
+                front_path, side_path = save_transition_state(prompt_index, attempt_index)
 
-                if prompt!=prompts[-1] and use_transition_generation:
-                    transition_start_wall = time.perf_counter()
-                    from transition_generation import transition_code_generation
-                    transition_infer_start_wall = time.perf_counter()
-                    transition_code_generation(
-                        prompts[i+1],
-                        no_planning=no_planning,
-                        no_interpolation=no_interpolation,
-                        llm_config=llm_config,
+                if use_task_judge:
+                    from transition_judgement import (
+                        append_judgement_log,
+                        decide_prompt_action,
+                        judge_task_success,
+                        resolve_judge_error_success,
+                        select_transition_target_prompt,
                     )
-                    transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
-                    transition_infer_total += transition_infer_elapsed
-                    from transition_template import TransitionExpert
-                    expert = TransitionExpert(self.model, self.data, self.task)
-                    original_step_and_log = self.task.step_and_log
-
-                    def step_and_log_with_capture(info: dict):
-                        original_step_and_log(info)
-                        self._capture_replay_frame()
-
-                    self.task.step_and_log = step_and_log_with_capture
+                    judgement = None
+                    error_text = None
                     try:
-                        self._capture_replay_frame()
-                        expert.execute()
-                        self._capture_replay_frame()
-                    finally:
-                        self.task.step_and_log = original_step_and_log
-                    transition_elapsed = time.perf_counter() - transition_start_wall
-                    transition_total += transition_elapsed
-                    transition_count += 1
-                    print(
-                        f"[Timing] transition to next prompt took {transition_elapsed:.3f}s "
-                        f"(inference {transition_infer_elapsed:.3f}s)"
+                        judgement = judge_task_success(
+                            prompt=prompt,
+                            front_image_path=front_path,
+                            side_image_path=side_path,
+                            llm_config=llm_config,
+                            threshold=judge_confidence_threshold,
+                        )
+                        prompt_success = bool(judgement["prompt_success"])
+                    except Exception as e:
+                        error_text = str(e)
+                        prompt_success = resolve_judge_error_success(judge_on_error)
+                        judgement = {
+                            "success": prompt_success,
+                            "confidence": 1.0 if prompt_success else 0.0,
+                            "reason": f"judge error handled with judge_on_error={judge_on_error}",
+                            "failure_mode": "judge_error",
+                            "prompt_success": prompt_success,
+                            "raw": None,
+                        }
+                        print(f"[TaskJudge] Judge failed for prompt {prompt_index}: {error_text}")
+
+                    action = decide_prompt_action(
+                        prompt_success=prompt_success,
+                        attempt_index=attempt_index,
+                        max_prompt_retries=max_prompt_retries,
+                        is_final_prompt=prompt_index == len(prompts) - 1,
                     )
-                elif prompt != prompts[-1]:
-                    print("[Transition] Skipped transition generation (disabled by flag).")
+                    append_judgement_log(
+                        {
+                            "task_name": getattr(self.task, "name", None),
+                            "prompt_index": prompt_index,
+                            "prompt": prompt,
+                            "attempt_index": attempt_index,
+                            "success": judgement["success"],
+                            "prompt_success": judgement["prompt_success"],
+                            "confidence": judgement["confidence"],
+                            "reason": judgement["reason"],
+                            "failure_mode": judgement["failure_mode"],
+                            "front_image_path": str(front_path),
+                            "side_image_path": str(side_path),
+                            "action": action,
+                            "raw_judge_result": judgement.get("raw"),
+                            "error_text": error_text,
+                        }
+                    )
+                    print(
+                        f"[TaskJudge] prompt_index={prompt_index} attempt={attempt_index} "
+                        f"success={judgement['prompt_success']} confidence={judgement['confidence']:.3f} "
+                        f"action={action}"
+                    )
+                    target_prompt = select_transition_target_prompt(prompts, prompt_index, action)
+                else:
+                    action = "advance"
+                    target_prompt = prompts[prompt_index + 1] if prompt_index + 1 < len(prompts) else None
+
+                if action == "fail_episode":
+                    all_success = False
+                    failed_prompt = prompt
+                    break
+
+                if target_prompt is not None:
+                    if use_task_judge and action == "retry" and not use_transition_generation:
+                        print("[TaskJudge] Retry requested but transition generation is disabled; failing episode.")
+                        all_success = False
+                        failed_prompt = prompt
+                        break
+                    timing_label = "current prompt retry" if action == "retry" else "next prompt"
+                    execute_transition_to(target_prompt, timing_label)
+
+                if action == "retry":
+                    attempt_counts[prompt_index] += 1
+                    continue
+
+                prompt_index += 1
             
             self.task.finish()
             self.render_finish()

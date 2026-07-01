@@ -202,9 +202,21 @@ class Centrifuge_Eppendorf_5910(System):
         if not self.lid_open_button.is_pressed:
             self._lid_open_button_armed = True
 
+        lid_is_closed = lid_qpos >= self.lid_qpos_max - self.lid_closed_tol
+        if (
+            lid_is_closed
+            and data.eq_active[self.lid_lock] == 1
+            and not self.lid_open_button.is_pressed
+        ):
+            self._bad_locking = False
+            self._lid_release_active = False
+            self._lid_hold_active = False
+
         if self._lid_open_button_armed and self.lid_open_button.is_pressed:
             self._lid_open_button_armed = False
             self._lid_release_active = True
+            self._lid_hold_active = False
+            self._bad_locking = False
             data.eq_active[self.lid_lock] = 0
             data.ctrl[self.lid_opener] = self.lid_pop_target_qpos
             return
@@ -223,7 +235,7 @@ class Centrifuge_Eppendorf_5910(System):
             data.ctrl[self.lid_opener] = self.lid_hold_qpos
             return
 
-        if lid_qpos < self.lid_qpos_max - self.lid_closed_tol:
+        if not lid_is_closed:
             self._bad_locking = True
         else:
             self._bad_locking = False

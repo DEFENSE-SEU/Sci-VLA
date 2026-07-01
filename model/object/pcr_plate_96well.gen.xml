@@ -26,11 +26,11 @@
       <geom size="0.057 0.0028975 0.009595" pos="0 -0.0351025 0" type="box" group="3" 
             friction="2.5 0.3 0.05" solref="0.01 1.5" solimp="0.85 0.95 0.005" />
       
-      <geom type="mesh" contype="0" conaffinity="0" group="2" mesh="pcr_plate_96well-visual_visual" />
+      <geom type="mesh" contype="0" conaffinity="0" group="2" mesh="pcr_plate_96well-visual_visual" rgba="0.1 0.35 1 1" />
       
                   <geom name="surface_texture" type="box" size="0.0551 0.0361 0.00095" pos="0 0 0.009975"
             friction="2 0.4 0.08" solref="0.015 1.8" solimp="0.88 0.96 0.003"
-            rgba="0.9 0.9 0.9 0.1"/>
+            rgba="0.1 0.35 1 0.18"/>
     </body>
   </worldbody>
 </mujoco>

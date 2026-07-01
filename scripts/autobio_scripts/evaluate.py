@@ -125,6 +125,10 @@ def evaluate_task(
     no_interpolation: bool = False,
     control_fps: float = 50.0,
     llm_config: dict | None = None,
+    use_task_judge: bool = False,
+    max_prompt_retries: int = 1,
+    judge_confidence_threshold: float = 0.6,
+    judge_on_error: str = "fail",
 ):
     evaluator.task.reset(seed=seed)
     # evaluator.task.set_serializer(log_root="logs/xxxx", log_name=str(seed))
@@ -137,6 +141,10 @@ def evaluate_task(
         no_interpolation=no_interpolation,
         control_fps=control_fps,
         llm_config=llm_config,
+        use_task_judge=use_task_judge,
+        max_prompt_retries=max_prompt_retries,
+        judge_confidence_threshold=judge_confidence_threshold,
+        judge_on_error=judge_on_error,
     )
 
 
@@ -192,6 +200,10 @@ _no_planning: bool
 _no_interpolation: bool
 _control_fps: float
 _llm_config: dict | None = None
+_use_task_judge: bool
+_max_prompt_retries: int
+_judge_confidence_threshold: float
+_judge_on_error: str
 _log_file_handle = None
 
 
@@ -240,6 +252,10 @@ def init_worker(
     no_interpolation: bool,
     control_fps: float,
     llm_config: dict | None,
+    use_task_judge: bool,
+    max_prompt_retries: int,
+    judge_confidence_threshold: float,
+    judge_on_error: str,
     mujoco_gl: str,
     queue,
     prompts: list[str] | None = None,
@@ -251,7 +267,7 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
     _policy = make_policy(host, port, policy_backend)
@@ -262,6 +278,10 @@ def init_worker(
     _no_interpolation = no_interpolation
     _control_fps = control_fps
     _llm_config = llm_config
+    _use_task_judge = use_task_judge
+    _max_prompt_retries = max_prompt_retries
+    _judge_confidence_threshold = judge_confidence_threshold
+    _judge_on_error = judge_on_error
 
 def step_worker(seed: int):
     return evaluate_task(
@@ -275,6 +295,10 @@ def step_worker(seed: int):
         _no_interpolation,
         _control_fps,
         _llm_config,
+        _use_task_judge,
+        _max_prompt_retries,
+        _judge_confidence_threshold,
+        _judge_on_error,
     )
 
 def parse_args():
@@ -290,7 +314,7 @@ def parse_args():
         help="Policy websocket payload adapter to use: openpi keeps current keys; labvla maps Sci-VLA keys to LABVLA camera/state keys.",
     )
     parser.add_argument("--task", type=str, default="pickup", help="Task name")
-    parser.add_argument("--num_episodes", type=int, default=20, help="Number of episodes to evaluate")
+    parser.add_argument("--num_episodes", type=int, default=1, help="Number of episodes to evaluate")
     parser.add_argument("--image_history", type=int, default=0, help="Image history for the policy")
     parser.add_argument("--num_workers", type=int, default=0, help="Number of workers for parallel evaluation, 0 for serial")
     parser.add_argument("--save", type=str, default=None, help="Output file for evaluation results")
@@ -316,7 +340,7 @@ def parse_args():
     parser.add_argument(
         "--use-transition-generation",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Whether to run transition generation and execution between prompts",
     )
     parser.add_argument(
@@ -337,6 +361,15 @@ def parse_args():
     parser.add_argument("--llm-max-tokens", type=int, default=None, help="LLM max output tokens")
     parser.add_argument("--llm-max-attempts", type=int, default=None, help="Max retry attempts per LLM stage")
     parser.add_argument("--llm-timeout", type=float, default=None, help="LLM request timeout in seconds")
+    parser.add_argument("--llm-image-max-side", type=int, default=None, help="Max image side before sending transition images to VLM; 0 disables compression")
+    parser.add_argument("--llm-image-quality", type=int, default=None, help="JPEG quality for compressed transition images")
+    parser.add_argument(
+        "--llm-local-retrieval-first",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Try local fuzzy qpos prompt retrieval before calling the LLM",
+    )
+    parser.add_argument("--llm-local-retrieval-cutoff", type=float, default=None, help="Local fuzzy qpos prompt match cutoff")
     parser.add_argument(
         "--llm-thinking",
         type=str,
@@ -350,6 +383,30 @@ def parse_args():
         default="auto",
         choices=["auto", "responses", "chat"],
         help="LLM API mode: auto (local base_url->chat, remote->responses), or force responses/chat",
+    )
+    parser.add_argument(
+        "--use-task-judge",
+        action="store_true",
+        help="Use a VLM judge after each prompt to decide whether to advance or retry the current prompt.",
+    )
+    parser.add_argument(
+        "--max-prompt-retries",
+        type=int,
+        default=1,
+        help="Maximum retry transitions for each prompt when the task judge reports failure.",
+    )
+    parser.add_argument(
+        "--judge-confidence-threshold",
+        type=float,
+        default=0.6,
+        help="Minimum VLM judge confidence required to accept a successful prompt.",
+    )
+    parser.add_argument(
+        "--judge-on-error",
+        type=str,
+        default="fail",
+        choices=["fail", "pass"],
+        help="How to handle judge request/parsing errors: fail retries conservatively or pass for debugging.",
     )
     return parser.parse_args()
 
@@ -372,6 +429,10 @@ if __name__ == "__main__":
         "max_tokens": args.llm_max_tokens,
         "max_attempts": args.llm_max_attempts,
         "timeout": args.llm_timeout,
+        "image_max_side": args.llm_image_max_side,
+        "image_quality": args.llm_image_quality,
+        "local_retrieval_first": args.llm_local_retrieval_first,
+        "local_retrieval_cutoff": args.llm_local_retrieval_cutoff,
         "thinking": args.llm_thinking,
         "backend_mode": args.llm_backend_mode,
     }
@@ -399,6 +460,10 @@ if __name__ == "__main__":
                 args.no_interpolation,
                 args.control_fps,
                 llm_config,
+                args.use_task_judge,
+                args.max_prompt_retries,
+                args.judge_confidence_threshold,
+                args.judge_on_error,
             )
             success, timing = normalize_eval_result(raw_result)
             success_results.append(float(success))
@@ -431,6 +496,10 @@ if __name__ == "__main__":
                 args.no_interpolation,
                 args.control_fps,
                 llm_config,
+                args.use_task_judge,
+                args.max_prompt_retries,
+                args.judge_confidence_threshold,
+                args.judge_on_error,
                 mujoco_gl,
                 queue,
                 prompts,

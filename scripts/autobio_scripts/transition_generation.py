@@ -1,5 +1,6 @@
 import os
 import base64
+import io
 import mimetypes
 from pathlib import Path
 from openai import OpenAI
@@ -8,9 +9,22 @@ import numpy as np
 import json
 import re
 import textwrap
-from difflib import get_close_matches
-from typing import Any
+from difflib import SequenceMatcher
+from typing import Any, Callable
 from urllib.parse import urlparse
+
+
+class NoValidQposCandidateError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        fallback_qpos=None,
+        fallback_selection: dict | None = None,
+    ):
+        super().__init__(message)
+        self.fallback_qpos = fallback_qpos
+        self.fallback_selection = fallback_selection
 
 
 def _sanitize_error_text(error: Exception, max_len: int = 500) -> str:
@@ -25,7 +39,12 @@ def _sanitize_error_text(error: Exception, max_len: int = 500) -> str:
         return text[:max_len] + "...<truncated>"
     return text
 
-def file_to_data_url(path: str) -> str:
+def file_to_data_url(
+    path: str,
+    *,
+    max_image_side: int | None = None,
+    image_quality: int = 80,
+) -> str:
     """
     Read a local image file and convert it to a base64-encoded data URL:
     data:image/jpeg;base64,...
@@ -33,6 +52,21 @@ def file_to_data_url(path: str) -> str:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Image not found: {p.resolve()}")
+
+    if max_image_side is not None and int(max_image_side) > 0:
+        try:
+            from PIL import Image
+
+            with Image.open(p) as image:
+                image = image.convert("RGB")
+                image.thumbnail((int(max_image_side), int(max_image_side)))
+                buffer = io.BytesIO()
+                quality = min(95, max(1, int(image_quality)))
+                image.save(buffer, format="JPEG", quality=quality, optimize=True)
+            b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            return f"data:image/jpeg;base64,{b64}"
+        except ImportError:
+            print("[LLM] PIL not available; sending original image without compression.")
 
     mime, _ = mimetypes.guess_type(str(p))
     mime = mime or "image/png"  # fallback
@@ -627,6 +661,33 @@ def _normalize_prompt(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
+def _find_local_prompt_match(
+    task_prompt: str,
+    prompt_choices: list[str],
+    *,
+    cutoff: float = 0.72,
+) -> tuple[str, float] | None:
+    if not prompt_choices:
+        return None
+
+    norm_prompt = _normalize_prompt(task_prompt)
+    norm_map = {_normalize_prompt(prompt): prompt for prompt in prompt_choices}
+    if norm_prompt in norm_map:
+        return norm_map[norm_prompt], 1.0
+
+    best_norm = None
+    best_score = 0.0
+    for choice_norm in norm_map:
+        score = SequenceMatcher(None, norm_prompt, choice_norm).ratio()
+        if score > best_score:
+            best_norm = choice_norm
+            best_score = score
+
+    if best_norm is None or best_score < float(cutoff):
+        return None
+    return norm_map[best_norm], float(best_score)
+
+
 def _pick_nearest_index(stacked_qpos: list, current_joint_pos: np.ndarray) -> int:
     if len(stacked_qpos) == 0:
         raise ValueError("No qpos candidates provided")
@@ -646,6 +707,241 @@ def _pick_nearest_index(stacked_qpos: list, current_joint_pos: np.ndarray) -> in
     return best_idx
 
 
+def _as_bool_validation(validation) -> tuple[bool, dict | None]:
+    if isinstance(validation, dict):
+        for key in ("valid", "success", "is_valid"):
+            if key in validation:
+                return bool(validation[key]), validation
+        return bool(validation), validation
+    return bool(validation), None
+
+
+def _qpos_joint_distance(candidate_qpos, current_joint_pos: np.ndarray) -> float:
+    cur = np.asarray(current_joint_pos, dtype=np.float64).reshape(-1)
+    q_arr = np.asarray(candidate_qpos, dtype=np.float64).reshape(-1)
+    dim = min(6, len(cur), len(q_arr))
+    if dim <= 0:
+        return float("inf")
+    if not np.isfinite(cur[:dim]).all() or not np.isfinite(q_arr[:dim]).all():
+        return float("inf")
+    return float(np.linalg.norm(cur[:dim] - q_arr[:dim]))
+
+
+def select_target_qpos_candidate(
+    stacked_qpos: list,
+    current_joint_pos: np.ndarray,
+    *,
+    top_k: int = 3,
+    path_validator: Callable[..., bool | dict] | None = None,
+) -> dict:
+    if not isinstance(stacked_qpos, list) or len(stacked_qpos) == 0:
+        raise ValueError("No qpos candidates provided")
+
+    effective_top_k = max(1, int(top_k or 3))
+    ranked_candidates = []
+    for i, qpos in enumerate(stacked_qpos):
+        ranked_candidates.append(
+            {
+                "index": i,
+                "distance": _qpos_joint_distance(qpos, current_joint_pos),
+                "qpos": np.asarray(qpos, dtype=np.float64).reshape(-1),
+            }
+        )
+    ranked_candidates.sort(key=lambda item: (item["distance"], item["index"]))
+    top_candidates = ranked_candidates[: min(effective_top_k, len(ranked_candidates))]
+
+    if path_validator is None:
+        selected = top_candidates[0]
+        return {
+            "selected_index": selected["index"],
+            "selected_qpos": selected["qpos"],
+            "selected_distance": selected["distance"],
+            "top_k": effective_top_k,
+            "validation": None,
+            "top_candidates": [
+                {"index": item["index"], "distance": item["distance"]}
+                for item in top_candidates
+            ],
+        }
+
+    validation_records = [
+        {"index": item["index"], "distance": item["distance"]}
+        for item in top_candidates
+    ]
+    for candidate in top_candidates:
+        try:
+            validation = path_validator(
+                candidate["qpos"],
+                selected_index=candidate["index"],
+            )
+        except Exception as e:
+            validation = {
+                "valid": False,
+                "reason": "validator_exception",
+                "error": str(e),
+            }
+        is_valid, validation_payload = _as_bool_validation(validation)
+        record_index = next(
+            i for i, item in enumerate(validation_records)
+            if item["index"] == candidate["index"]
+        )
+        record = {
+            "index": candidate["index"],
+            "distance": candidate["distance"],
+            "valid": is_valid,
+        }
+        if validation_payload is not None:
+            record.update(validation_payload)
+        validation_records[record_index] = record
+        if is_valid:
+            return {
+                "selected_index": candidate["index"],
+                "selected_qpos": candidate["qpos"],
+                "selected_distance": candidate["distance"],
+                "top_k": effective_top_k,
+                "validation": record,
+                "top_candidates": validation_records,
+            }
+
+    fallback = top_candidates[0]
+    fallback_record = {
+        "index": fallback["index"],
+        "distance": fallback["distance"],
+        "valid": False,
+        "reason": "validation_failed_fallback",
+    }
+    fallback_selection = {
+        "selected_index": fallback["index"],
+        "selected_qpos": fallback["qpos"],
+        "selected_distance": fallback["distance"],
+        "top_k": effective_top_k,
+        "validation": fallback_record,
+        "top_candidates": validation_records,
+        "fallback_reason": "top_k_validation_exhausted",
+    }
+    raise NoValidQposCandidateError(
+        "No valid qpos candidate found in Top-K validation. "
+        f"top_k={effective_top_k}, validations={validation_records}",
+        fallback_qpos=fallback["qpos"],
+        fallback_selection=fallback_selection,
+    )
+
+
+def _is_no_valid_qpos_candidate_error(error: Exception) -> bool:
+    return isinstance(error, NoValidQposCandidateError) or "No valid qpos candidate" in str(error)
+
+
+def _retrieve_target_qpos_with_retry(
+    retrieve_once: Callable[[int], np.ndarray],
+    *,
+    max_transition_regeneration_attempts: int = 1,
+) -> np.ndarray:
+    max_retries = max(0, int(max_transition_regeneration_attempts))
+    total_attempts = max_retries + 1
+    last_error = None
+    for attempt_index in range(total_attempts):
+        try:
+            return retrieve_once(attempt_index)
+        except Exception as e:
+            if not _is_no_valid_qpos_candidate_error(e):
+                raise
+            last_error = e
+            if attempt_index >= max_retries:
+                break
+            print(
+                "[Transition] Top-K qpos validation failed for all candidates; "
+                f"regenerating transition action ({attempt_index + 1}/{max_retries}). "
+                f"Reason: {e}"
+            )
+    fallback_qpos = getattr(last_error, "fallback_qpos", None)
+    if fallback_qpos is not None:
+        print(
+            "[Transition] Top-K qpos validation still failed after retry budget; "
+            "falling back to nearest qpos candidate."
+        )
+        return np.asarray(fallback_qpos, dtype=np.float64).reshape(-1)
+    raise last_error
+
+
+def _contact_pairs(data) -> set[tuple[int, int]]:
+    pairs = set()
+    for i in range(int(getattr(data, "ncon", 0))):
+        contact = data.contact[i]
+        geom1 = int(contact.geom1)
+        geom2 = int(contact.geom2)
+        pairs.add(tuple(sorted((geom1, geom2))))
+    return pairs
+
+
+def _warning_counts(data) -> np.ndarray:
+    warning = getattr(data, "warning", None)
+    number = getattr(warning, "number", None)
+    if number is None:
+        return np.zeros(0, dtype=np.int64)
+    return np.asarray(number)
+
+
+def validate_qpos_interpolation_path(
+    model,
+    data,
+    jnt_span,
+    candidate_qpos,
+    *,
+    num_steps: int = 100,
+    allow_existing_contacts: bool = True,
+) -> dict:
+    import mujoco
+
+    try:
+        jnt_indices = list(jnt_span)
+        if len(jnt_indices) == 0:
+            return {"valid": False, "reason": "empty_jnt_span"}
+
+        target = np.asarray(candidate_qpos, dtype=np.float64).reshape(-1)[: len(jnt_indices)]
+        if target.size != len(jnt_indices) or not np.isfinite(target).all():
+            return {"valid": False, "reason": "invalid_target_qpos"}
+
+        sim_data = mujoco.MjData(model)
+        sim_data.qpos[:] = data.qpos
+        sim_data.qvel[:] = data.qvel
+        if getattr(sim_data, "ctrl", None) is not None and getattr(data, "ctrl", None) is not None:
+            sim_data.ctrl[:] = data.ctrl
+        mujoco.mj_forward(model, sim_data)
+
+        start = np.asarray(sim_data.qpos[jnt_indices], dtype=np.float64).copy()
+        baseline_contacts = _contact_pairs(sim_data) if allow_existing_contacts else set()
+        steps = max(2, int(num_steps))
+
+        for alpha in np.linspace(0.0, 1.0, steps):
+            sim_data.qpos[jnt_indices] = start + alpha * (target - start)
+            sim_data.qvel[:] = 0.0
+            mujoco.mj_forward(model, sim_data)
+
+            if not np.isfinite(sim_data.qpos).all() or not np.isfinite(sim_data.qvel).all():
+                return {"valid": False, "reason": "nonfinite_state"}
+
+            warnings = _warning_counts(sim_data)
+            if warnings.size > 0 and np.any(warnings):
+                return {
+                    "valid": False,
+                    "reason": "mujoco_warning",
+                    "warnings": warnings.astype(int).tolist(),
+                }
+
+            current_contacts = _contact_pairs(sim_data)
+            new_contacts = current_contacts - baseline_contacts
+            if new_contacts:
+                return {
+                    "valid": False,
+                    "reason": "new_collision",
+                    "new_contacts": [list(pair) for pair in sorted(new_contacts)],
+                }
+
+        return {"valid": True, "reason": "path_validated", "num_steps": steps}
+    except Exception as e:
+        return {"valid": False, "reason": "validator_exception", "error": str(e)}
+
+
 def _build_task_prompt_index(qpos_db: dict | list):
     tasks = qpos_db if isinstance(qpos_db, list) else qpos_db.get("tasks", [])
     if not isinstance(tasks, list):
@@ -662,20 +958,25 @@ def _build_task_prompt_index(qpos_db: dict | list):
     return by_prompt
 
 
-def _fallback_find_qpos(db: dict | list, task_prompt: str, current_joint_pos: np.ndarray):
+def _fallback_find_qpos(
+    db: dict | list,
+    task_prompt: str,
+    current_joint_pos: np.ndarray,
+    *,
+    top_k: int = 3,
+    path_validator: Callable[..., bool | dict] | None = None,
+    match_cutoff: float = 0.5,
+):
     by_prompt = _build_task_prompt_index(db)
 
-    norm_prompt = _normalize_prompt(task_prompt)
-    norm_map = {_normalize_prompt(k): k for k in by_prompt}
-
-    if norm_prompt in norm_map:
-        matched_prompt = norm_map[norm_prompt]
-    else:
-        choices = list(norm_map.keys())
-        candidates = get_close_matches(norm_prompt, choices, n=1, cutoff=0.5)
-        if not candidates:
-            raise ValueError(f"No task prompt matched for: {task_prompt}")
-        matched_prompt = norm_map[candidates[0]]
+    local_match = _find_local_prompt_match(
+        task_prompt,
+        list(by_prompt.keys()),
+        cutoff=match_cutoff,
+    )
+    if local_match is None:
+        raise ValueError(f"No task prompt matched for: {task_prompt}")
+    matched_prompt, _ = local_match
 
     matched = by_prompt[matched_prompt]
     stacked_qpos = matched.get("initial_qpos")
@@ -687,14 +988,26 @@ def _fallback_find_qpos(db: dict | list, task_prompt: str, current_joint_pos: np
         stacked_qpos = [entry.get("initial_qpos") for entry in entries if entry.get("initial_qpos") is not None]
         if not stacked_qpos:
             raise ValueError(f"Matched task entries have no initial_qpos: {matched_prompt}")
-        selected_index = _pick_nearest_index(stacked_qpos, current_joint_pos)
+        selection = select_target_qpos_candidate(
+            stacked_qpos,
+            current_joint_pos,
+            top_k=top_k,
+            path_validator=path_validator,
+        )
+        selected_index = selection["selected_index"]
         qpos = stacked_qpos[selected_index]
         if qpos is None:
             raise ValueError(f"Matched task entry has no initial_qpos: {matched_prompt}")
-        return matched_prompt, qpos, len(stacked_qpos), selected_index
+        return matched_prompt, qpos, len(stacked_qpos), selected_index, selection
 
-    selected_index = _pick_nearest_index(stacked_qpos, current_joint_pos)
-    return matched_prompt, stacked_qpos[selected_index], len(stacked_qpos), selected_index
+    selection = select_target_qpos_candidate(
+        stacked_qpos,
+        current_joint_pos,
+        top_k=top_k,
+        path_validator=path_validator,
+    )
+    selected_index = selection["selected_index"]
+    return matched_prompt, stacked_qpos[selected_index], len(stacked_qpos), selected_index, selection
 
 
 def retrieve_target_qpos_with_agent(
@@ -710,6 +1023,10 @@ def retrieve_target_qpos_with_agent(
     timeout: float | None = None,
     backend_mode: str = "auto",
     thinking_mode: str = "auto",
+    top_k: int = 3,
+    path_validator: Callable[..., bool | dict] | None = None,
+    local_retrieval_first: bool = False,
+    local_retrieval_cutoff: float = 0.72,
 ):
     qpos_db_path = Path("logs/lerobot_initial_qpos.json")
     if not qpos_db_path.exists():
@@ -722,6 +1039,58 @@ def retrieve_target_qpos_with_agent(
 
     by_prompt = _build_task_prompt_index(qpos_db)
     task_prompt_list = list(by_prompt.keys())
+    retrieval_source = "llm"
+
+    if local_retrieval_first:
+        local_match = _find_local_prompt_match(
+            task_prompt,
+            task_prompt_list,
+            cutoff=local_retrieval_cutoff,
+        )
+        if local_match is not None:
+            try:
+                matched_task_prompt, selected_qpos, candidate_count, selected_index, selection = _fallback_find_qpos(
+                    qpos_db,
+                    task_prompt,
+                    current_joint_pos,
+                    top_k=top_k,
+                    path_validator=path_validator,
+                    match_cutoff=local_retrieval_cutoff,
+                )
+                requested_prompt = task_prompt
+                retrieval_source = "local_fuzzy"
+                print(
+                    "[qpos-retrieval] local match: "
+                    f"{matched_task_prompt} (score={local_match[1]:.3f})"
+                )
+                selected_qpos_arr = np.asarray(selected_qpos, dtype=np.float64).reshape(-1)
+                if selected_qpos_arr.size == 0:
+                    raise ValueError("Retrieved selected_qpos is empty")
+
+                selected_payload = {
+                    "requested_task_prompt": requested_prompt,
+                    "matched_task_prompt": matched_task_prompt,
+                    "retrieval_source": retrieval_source,
+                    "selected_index": selected_index,
+                    "candidate_count": candidate_count,
+                    "top_k": max(1, int(top_k or 3)),
+                    "selected_qpos": selected_qpos_arr.tolist(),
+                    "selection": {
+                        **selection,
+                        "selected_qpos": np.asarray(selection["selected_qpos"], dtype=np.float64).reshape(-1).tolist(),
+                    },
+                }
+                out_path = Path("logs/target_qpos_selected.json")
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(selected_payload, f, ensure_ascii=False, indent=2)
+
+                print(f"Saved retrieved target qpos to: {out_path}")
+                return selected_qpos_arr
+            except NoValidQposCandidateError:
+                raise
+            except Exception as e:
+                print(f"Local qpos retrieval failed, fallback to LLM retrieval: {e}")
 
     retrieval_model = model_name
     retrieval_prompt = f"""
@@ -765,8 +1134,13 @@ Rules:
 
         if matched_task_prompt not in by_prompt:
             # If LLM returns a near variant, use local fuzzy normalization.
-            matched_task_prompt, _, _, _ = _fallback_find_qpos(
-                qpos_db, matched_task_prompt, current_joint_pos
+            matched_task_prompt, _, _, _, _ = _fallback_find_qpos(
+                qpos_db,
+                matched_task_prompt,
+                current_joint_pos,
+                top_k=top_k,
+                path_validator=path_validator,
+                match_cutoff=0.5,
             )
 
         matched = by_prompt[matched_task_prompt]
@@ -778,19 +1152,37 @@ Rules:
             stacked_qpos = [entry.get("initial_qpos") for entry in entries if entry.get("initial_qpos") is not None]
             if not stacked_qpos:
                 raise ValueError(f"Matched task entries have no initial_qpos: {matched_task_prompt}")
-            selected_index = _pick_nearest_index(stacked_qpos, current_joint_pos)
+            selection = select_target_qpos_candidate(
+                stacked_qpos,
+                current_joint_pos,
+                top_k=top_k,
+                path_validator=path_validator,
+            )
+            selected_index = selection["selected_index"]
             selected_qpos = stacked_qpos[selected_index]
             candidate_count = len(stacked_qpos)
         else:
-            selected_index = _pick_nearest_index(stacked_qpos, current_joint_pos)
+            selection = select_target_qpos_candidate(
+                stacked_qpos,
+                current_joint_pos,
+                top_k=top_k,
+                path_validator=path_validator,
+            )
+            selected_index = selection["selected_index"]
             selected_qpos = stacked_qpos[selected_index]
             candidate_count = len(stacked_qpos)
     except Exception as e:
         print(f"LLM retrieval failed, fallback to local retrieval: {e}")
         requested_prompt = task_prompt
-        matched_task_prompt, selected_qpos, candidate_count, selected_index = _fallback_find_qpos(
-            qpos_db, task_prompt, current_joint_pos
+        matched_task_prompt, selected_qpos, candidate_count, selected_index, selection = _fallback_find_qpos(
+            qpos_db,
+            task_prompt,
+            current_joint_pos,
+            top_k=top_k,
+            path_validator=path_validator,
+            match_cutoff=0.5,
         )
+        retrieval_source = "local_fallback"
 
     selected_qpos_arr = np.asarray(selected_qpos, dtype=np.float64).reshape(-1)
     if selected_qpos_arr.size == 0:
@@ -799,9 +1191,15 @@ Rules:
     selected_payload = {
         "requested_task_prompt": requested_prompt,
         "matched_task_prompt": matched_task_prompt,
+        "retrieval_source": retrieval_source,
         "selected_index": selected_index,
         "candidate_count": candidate_count,
+        "top_k": max(1, int(top_k or 3)),
         "selected_qpos": selected_qpos_arr.tolist(),
+        "selection": {
+            **selection,
+            "selected_qpos": np.asarray(selection["selected_qpos"], dtype=np.float64).reshape(-1).tolist(),
+        },
     }
     out_path = Path("logs/target_qpos_selected.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -816,6 +1214,9 @@ def transition_code_generation(
     no_planning: bool = False,
     no_interpolation: bool = False,
     llm_config: dict | None = None,
+    target_top_k: int = 3,
+    qpos_path_validator: Callable[..., bool | dict] | None = None,
+    max_transition_regeneration_attempts: int = 1,
 ):
     llm_config = llm_config or {}
 
@@ -841,6 +1242,16 @@ def transition_code_generation(
         except Exception as e:
             raise ValueError(f"Invalid {field}: {value}") from e
 
+    def _to_bool(value, field: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError(f"Invalid {field}: {value}")
+
     base_url = _pick_config("base_url", "BASE_URL")
     api_key = _pick_config("api_key", "API_KEY")
     model_name = _pick_config("model_name", "MODEL_NAME")
@@ -852,6 +1263,16 @@ def transition_code_generation(
     backend_mode = _normalize_backend_mode(str(_pick_config("backend_mode", "LLM_BACKEND_MODE", "auto")))
     effective_backend_mode = _resolve_backend_mode(backend_mode, base_url)
     thinking_mode = _normalize_thinking_mode(str(_pick_config("thinking", "LLM_THINKING", "auto")))
+    image_max_side = _to_optional_int(_pick_config("image_max_side", "LLM_IMAGE_MAX_SIDE", 768), "image_max_side")
+    image_quality = _to_optional_int(_pick_config("image_quality", "LLM_IMAGE_QUALITY", 80), "image_quality")
+    local_retrieval_first = _to_bool(
+        _pick_config("local_retrieval_first", "LLM_LOCAL_RETRIEVAL_FIRST", False),
+        "local_retrieval_first",
+    )
+    local_retrieval_cutoff = _to_optional_float(
+        _pick_config("local_retrieval_cutoff", "LLM_LOCAL_RETRIEVAL_CUTOFF", 0.72),
+        "local_retrieval_cutoff",
+    )
 
     if backend_mode == "auto":
         if effective_backend_mode == "chat":
@@ -874,18 +1295,28 @@ def transition_code_generation(
     client = OpenAI(**client_kwargs)
 
     current_joint_pos_arr = np.asarray(np.load('logs/current_joint.npy'), dtype=np.float64).reshape(-1)
-    target_joint_pos_arr = retrieve_target_qpos_with_agent(
-        client,
-        model_name,
-        task_prompt,
-        current_joint_pos_arr,
-        max_attempts=max_attempts,
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        backend_mode=effective_backend_mode,
-        thinking_mode=thinking_mode,
+    def retrieve_once(_attempt_index: int):
+        return retrieve_target_qpos_with_agent(
+            client,
+            model_name,
+            task_prompt,
+            current_joint_pos_arr,
+            max_attempts=max_attempts,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            backend_mode=effective_backend_mode,
+            thinking_mode=thinking_mode,
+            top_k=target_top_k,
+            path_validator=qpos_path_validator,
+            local_retrieval_first=local_retrieval_first,
+            local_retrieval_cutoff=local_retrieval_cutoff or 0.72,
+        )
+
+    target_joint_pos_arr = _retrieve_target_qpos_with_retry(
+        retrieve_once,
+        max_transition_regeneration_attempts=max_transition_regeneration_attempts,
     )
     target_joint_pos = str(target_joint_pos_arr.tolist())
     target_arm_qpos = target_joint_pos_arr[:6].tolist()
@@ -896,8 +1327,16 @@ def transition_code_generation(
     front_image_data_url = None
     side_image_data_url = None
     if not no_planning:
-        front_image_data_url = file_to_data_url('logs/current_view.png')
-        side_image_data_url = file_to_data_url('logs/current_side_view.png')
+        front_image_data_url = file_to_data_url(
+            'logs/current_view.png',
+            max_image_side=image_max_side,
+            image_quality=image_quality or 80,
+        )
+        side_image_data_url = file_to_data_url(
+            'logs/current_side_view.png',
+            max_image_side=image_max_side,
+            image_quality=image_quality or 80,
+        )
 
     planning_prompt = f'''
 You are a robot transition planner.

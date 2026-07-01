@@ -95,8 +95,8 @@ class UR5eArm:
         return Pose(res_pos, res_quat)
 
     def qpos_perturb(self):
-        lows = (-0.05, 0.0, -0.15, -0.025, 0.0, -0.1)
-        highs = (0.05, 0.15, -0.05, 0.025, 0.3, 0.1)
+        lows = (-0.3, -0.3, -0.3, -0.3, -0.3, -0.1)
+        highs = (0.3, 0.3, 0.3, 0.3, 0.3, 0.1)
         perturbation = np.random.uniform(lows, highs)
         return perturbation
 
@@ -214,8 +214,8 @@ class Centrifuge_5910(Centrifuge_Eppendorf_5910):
             case '1/detach': rel_pos = np.array([0., 0., -0.01])  
             case '2/detach': rel_pos = np.array([0.0, 0.0, -0.15]) 
             case 'grip': rel_pos = np.array([0., 0.0, 0.03])  
-            case 'lock_pre': rel_pos = np.array([0.0, -0.15, 0.1])  
-            case 'lock': rel_pos = np.array([0.02, 0.08, 0.1])  
+            case 'lock_pre': rel_pos = np.array([-0.10, -0.12, 0.10])  
+            case 'lock': rel_pos = np.array([-0.10, 0.08, 0.10])  
             case _:
                 print("failure", mode) 
                 raise ValueError(f"Unknown approach mode: {mode}") 
@@ -369,6 +369,10 @@ class Centrifuge5910Manipulate(Task):
         self.tube_start_pos = np.zeros(3)
         self.tube2_start_pos = np.zeros(3)
 
+    def _forward_and_update_instrument(self):
+        mujoco.mj_forward(self.model, self.data)
+        self.instrument.update(self.data)
+
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
@@ -384,15 +388,13 @@ class Centrifuge5910Manipulate(Task):
                 self.tube2_start_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
                 self.data.qpos[self.tube2.pos_span] = self.tube2_start_pos
 
-                self.data.eq_active[self.instrument.lid_lock] = 0
-                lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
+                lid_qpos = self.instrument.lid_qpos_max
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
-                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 prefix = ''
 
             case 'centrifuge5910_long_task_2':
@@ -407,15 +409,13 @@ class Centrifuge5910Manipulate(Task):
                 end_col=4
                 self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
 
-                self.data.eq_active[self.instrument.lid_lock] = 0
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
-                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 prefix = ''
             case 'open_centrifuge5910_lid':
                 r = random.randint(1,100)
@@ -440,15 +440,13 @@ class Centrifuge5910Manipulate(Task):
                     end_col=4
                     self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
 
-                self.data.eq_active[self.instrument.lid_lock] = 1
                 lid_qpos = self.instrument.lid_qpos_max
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
-                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
 
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 prefix='open the lid of the centrifuge5910'
             case 'close_centrifuge5910_lid':
                 r = random.randint(1,100)
@@ -476,7 +474,7 @@ class Centrifuge5910Manipulate(Task):
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 prefix='close the lid of the centrifuge5910'
             case 'take_experimental_tube_from_centrifuge5910':
                 # 将离心管放在离心机槽位中
@@ -495,11 +493,11 @@ class Centrifuge5910Manipulate(Task):
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 # 设置目标放置位置（在桌子上）
                 self.target_place_pos = np.array([
-                    -0.2 + np.random.uniform(-0.01, 0.01),  # X: 0.2-0.4
-                    0.3 + np.random.uniform(-0.01, 0.01),  # Y: -0.1-0.1
+                    -0.2 + np.random.uniform(-0.01, 0.01),
+                    -0.3 + np.random.uniform(-0.01, 0.01),
                     0.854  # Z: 桌子高度
                 ])
                 prefix='pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack'
@@ -519,11 +517,11 @@ class Centrifuge5910Manipulate(Task):
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 # 设置目标放置位置（在桌子上）
                 self.target_place_pos = np.array([
-                    -0.2 + np.random.uniform(-0.01, 0.01),  # X: 0.2-0.4
-                    0.3 + np.random.uniform(-0.01, 0.01),  # Y: -0.1-0.1
+                    -0.2 + np.random.uniform(-0.01, 0.01),
+                    -0.3 + np.random.uniform(-0.01, 0.01),
                     0.854  # Z: 桌子高度
                 ])
                 prefix='pick the balance centrifuge tube from the centrifuge5910 and place it on the rack'
@@ -544,7 +542,7 @@ class Centrifuge5910Manipulate(Task):
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 prefix='pick the experimental centrifuge tube from rack and place it into the centrifuge5910'
             case 'place_balance_tube_into_centrifuge5910':
                 slot_id=0
@@ -560,7 +558,7 @@ class Centrifuge5910Manipulate(Task):
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
                 # 确保物理正确
-                mujoco.mj_forward(self.model, self.data)
+                self._forward_and_update_instrument()
                 prefix='pick the balance centrifuge tube from rack and place it into the centrifuge5910'
             case 'press_centrifuge5910_button':
                 # 将离心管放在离心机槽位中
@@ -578,12 +576,10 @@ class Centrifuge5910Manipulate(Task):
                 # 设置盖子关节到关闭位置
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.005  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
-                self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_qpos_max
-                # 激活盖子锁定
-                self.data.eq_active[self.instrument.lid_lock] = 1
                 # 随机扰动机械臂位置
                 self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
                 self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._forward_and_update_instrument()
                 prefix='press the screen button of the centrifuge5910'
             case _:
                 raise ValueError(f"Unknown task: {self.task}")
@@ -614,7 +610,7 @@ class Centrifuge5910Manipulate(Task):
             case 'take_experimental_tube_from_centrifuge':
                 gripper_pose = self.arm.get_site_pose(self.data)
                 gripper_value = self.data.ctrl[self.arm.gripper_id] if hasattr(self.arm, 'gripper_id') else 0.0
-                target_place_pos = np.array([-0.2,0.3,0.824])
+                target_place_pos = np.array([-0.2,-0.3,0.824])
                 body_id = self.model.body("1/centrifuge_50ml_screw_cap").id
                 pos = self.data.xpos[body_id]
                 quat = self.data.xquat[body_id]
@@ -708,16 +704,11 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         self.move_to(pre_pose, num_steps=8)
         clear_pose = Pose(pos=np.array([-0.2, 0.25, 1.35]), quat=pre_pose.quat)
         self.move_to(clear_pose, num_steps=16)
-        if self.data.qpos[self.instrument.lid_qposadr] > self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
-            self.instrument._lid_release_active = True
-            self.data.eq_active[self.instrument.lid_lock] = 0
-            self.data.ctrl[self.instrument.lid_opener] = self.instrument.lid_pop_target_qpos
         for _ in range(1600):
             self.step_and_log({})
             lid_qpos = self.data.qpos[self.instrument.lid_qposadr]
             if lid_qpos <= self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
                 break
-        self.data.ctrl[self.instrument.lid_opener] = self.data.qpos[self.instrument.lid_qposadr]
 
     def execute(self):
         self.arm.ik.initial_qpos = self.data.qpos[self.arm.jnt_span]
@@ -725,30 +716,17 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
             case 'open_centrifuge5910_lid':
                 self.press_lid_open_button()
                 self.gripper_control(0)
-                self.instrument._lid_hold_active = True
-                self.instrument.lid_hold_qpos = self.instrument.lid_pop_qpos
                 cur_pose = self.arm.get_site_pose(self.data)
-                end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
-                path = self.interpolate(cur_pose, end_pose, 20)
-                self.path_follow(path)
-                cur_pose = self.arm.get_site_pose(self.data)
-                rotation_angle = -30  # 度
-                rotation_axis = 'y'  # 绕垂直轴旋转
-                # 创建旋转四元数
-                rotate_90 = R.from_euler(rotation_axis, rotation_angle, degrees=True)
-                target_quat = (rotate_90 * R.from_quat(cur_pose.quat)).as_quat()
-                end_pose = Pose(pos=np.array([0.2, 0.1, 1.35]), quat=cur_pose.quat)
+                end_pose = Pose(pos=np.array([-0.2, 0.25, 1.35]), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
 
                 target_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='1/detach')
                 self.move_to(target_pose, num_steps=12)
-                
+
                 target_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='grip')
                 self.move_to(target_pose, num_steps=12)
                 self.gripper_control(240)
-                self.instrument._lid_hold_active = False
-                self.data.ctrl[self.instrument.lid_opener] = self.data.qpos[self.instrument.lid_qposadr]
 
                 path = self.instrument.lever_path(self.data, mode='open/full')
                 self.path_follow(path[:-1])
@@ -776,7 +754,6 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 lock_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='lock')
                 lock_pose.quat = lock_quat  
                 self.move_to(lock_pose, num_steps=5)  
-                self.data.eq_active[self.instrument.lid_lock] = 1  
                 for _ in range(100):
                     self.step_and_log({})
                 final_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='lock_pre')

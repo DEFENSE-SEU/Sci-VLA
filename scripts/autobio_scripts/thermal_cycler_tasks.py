@@ -9,6 +9,15 @@ from task import Task, Expert, Manager, SCENE_ROOT
 from instrument import ThermalCyclerBioradC1000
 import random
 
+PCR_PLATE_TABLE_POS = np.array([0.0, 0.3, 0.824])
+PCR_PLATE_THERMAL_TARGET_POS = np.array([0.0, -0.174172, 0.914078])
+PCR_PLATE_SEATED_OFFSET = np.array([0.0, 0.01, 0.105])
+PCR_PLATE_TARGET_APPROACH_HIGH_OFFSET = np.array([0.0, 0.01, 0.2])
+PCR_PLATE_TARGET_APPROACH_LOW_OFFSET = np.array([0.0, 0.01, 0.12])
+PCR_PLATE_PLACE_RETREAT_OFFSET = np.array([0.0, -0.1, 0.1])
+PCR_PLATE_PICK_CLEARANCE_OFFSET = np.array([0.0, -0.1, 0.25])
+PCR_PLATE_GRIP_SETTLE_OFFSET = np.array([-0.01, 0.0, 0.0])
+
 def set_gravcomp(body: mujoco.MjsBody):
     body.gravcomp = 1
     for child in body.bodies:
@@ -257,7 +266,7 @@ class ThermalCyclerManipulate(Task):
         match self.task:
 
             case "thermal_cycler_long_task_1":
-                self.pcrPlate_target_pos=np.array([-0.174172,0,  0.914078])
+                self.pcrPlate_target_pos = PCR_PLATE_THERMAL_TARGET_POS
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
                 self.data.qpos[self.instrument.lever_qposadr] = self.instrument.lever_jntlimit[0]
                 mujoco.mj_kinematics(self.model, self.data)
@@ -267,7 +276,7 @@ class ThermalCyclerManipulate(Task):
                 pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                 pcrPlate_body_id = pcrPlate_body.id
                 pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                 self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
@@ -280,10 +289,10 @@ class ThermalCyclerManipulate(Task):
                     pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                     pcrPlate_body_id = pcrPlate_body.id
                     pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                    self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                    self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                     self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 elif r%2==1:
-                    self.pcrPlate_target_pos=np.array([-0.174172,0,  0.914078])
+                    self.pcrPlate_target_pos = PCR_PLATE_THERMAL_TARGET_POS
 
                 prefix = 'close the lid of the thermal cycler'
             case "open_thermal_cycler_lid":
@@ -292,10 +301,10 @@ class ThermalCyclerManipulate(Task):
                     pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                     pcrPlate_body_id = pcrPlate_body.id
                     pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                    self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                    self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                     self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 elif r%2==1:
-                    self.pcrPlate_target_pos=np.array([-0.174172,0,  0.914078])
+                    self.pcrPlate_target_pos = PCR_PLATE_THERMAL_TARGET_POS
                 
                 prefix = 'open the lid of the thermal cycler'
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
@@ -303,21 +312,21 @@ class ThermalCyclerManipulate(Task):
                 mujoco.mj_kinematics(self.model, self.data)
                 self.time_limit = 22.5
             case "place_pcrPlate_into_thermalCycler":
-                self.pcrPlate_target_pos=np.array([-0.174172,0,  0.914078])
+                self.pcrPlate_target_pos = PCR_PLATE_THERMAL_TARGET_POS
                 prefix = 'place pcrPlate into the thermal cycler'
             case "take_pcrPlate_from_thermalCycler":
-                self.pcrPlate_target_pos=np.array([0.3,0, 0.824])
+                self.pcrPlate_target_pos = PCR_PLATE_TABLE_POS
                 pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                 pcrPlate_body_id = pcrPlate_body.id
                 pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                 self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 prefix = 'take pcrPlate from the thermal cycler'
             case "screw_tighten_knob":
                 pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                 pcrPlate_body_id = pcrPlate_body.id
                 pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                 self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
@@ -328,7 +337,7 @@ class ThermalCyclerManipulate(Task):
                 pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                 pcrPlate_body_id = pcrPlate_body.id
                 pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                 self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
@@ -344,7 +353,7 @@ class ThermalCyclerManipulate(Task):
                 pcrPlate_body = self.model.body(f'96/pcr_plate_96well')
                 pcrPlate_body_id = pcrPlate_body.id
                 pcrPlate_jnt_adr = self.model.joint(f'pcr_plate_free').qposadr.item()
-                self.pcrPlate_pos=np.array([-0.174172,0,  0.914078]) + np.array([0.01, 0.0, 0.105])
+                self.pcrPlate_pos = PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET
                 self.data.qpos[pcrPlate_jnt_adr:pcrPlate_jnt_adr+3] = self.pcrPlate_pos
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
@@ -500,27 +509,27 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             self.path_follow(path)
             self.gripper_control(150)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(cur_pose.pos+(-0.1, 0, 0.1), cur_pose.quat)
+            terminal_pose = Pose(cur_pose.pos + PCR_PLATE_PLACE_RETREAT_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(cur_pose.pos+(-0.1, 0, 0.1), cur_pose.quat)
+            terminal_pose = Pose(cur_pose.pos + PCR_PLATE_PLACE_RETREAT_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(cur_pose.pos+(-0.1, 0, 0.1), cur_pose.quat)
+            terminal_pose = Pose(cur_pose.pos + PCR_PLATE_PLACE_RETREAT_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(cur_pose.pos+(-0.1, 0, 0.1), cur_pose.quat)
+            terminal_pose = Pose(cur_pose.pos + PCR_PLATE_PLACE_RETREAT_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(self.pcrPlate_target_pos+(0.01, 0.0, 0.2), cur_pose.quat)
+            terminal_pose = Pose(self.pcrPlate_target_pos + PCR_PLATE_TARGET_APPROACH_HIGH_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(self.pcrPlate_target_pos+(0.01, 0.0, 0.12), cur_pose.quat)
+            terminal_pose = Pose(self.pcrPlate_target_pos + PCR_PLATE_TARGET_APPROACH_LOW_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             self.gripper_control(0)
@@ -540,7 +549,7 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(self.pcrPlate_pos+np.array([0.0, 0.01, 0]), cur_pose.quat)
+            terminal_pose = Pose(self.pcrPlate_pos + PCR_PLATE_GRIP_SETTLE_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
             self.gripper_control(450)
@@ -549,7 +558,7 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(self.pcrPlate_target_pos+np.array([-0.1, 0.0, 0.25]), cur_pose.quat)
+            terminal_pose = Pose(self.pcrPlate_target_pos + PCR_PLATE_PICK_CLEARANCE_OFFSET, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
