@@ -1,0 +1,686 @@
+\documentclass[letterpaper]{article} % DO NOT CHANGE THIS
+\usepackage[submission]{aaai2027}  % DO NOT CHANGE THIS
+% The serif, sans-serif, and monospaced fonts are loaded automatically by
+% aaai2027.sty (newtxtext, helvet, courier). DO NOT add \usepackage{times},
+% \usepackage{helvet}, \usepackage{courier}, or any other font package.
+\usepackage[hyphens]{url}  % DO NOT CHANGE THIS
+\usepackage{graphicx} % DO NOT CHANGE THIS
+\urlstyle{rm} % DO NOT CHANGE THIS
+\def\UrlFont{\rm}  % DO NOT CHANGE THIS
+\usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\frenchspacing  % DO NOT CHANGE THIS
+%
+% These are recommended to typeset algorithms but not required. See the subsubsection on algorithms. Remove them if you don't have algorithms in your paper.
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage[figuresright]{rotating}
+\usepackage[table]{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{makecell}
+\usepackage{multirow}
+\usepackage{pdflscape}
+\usepackage{amssymb}
+%
+% These are recommended to typeset listings but not required. See the subsubsection on listing. Remove this block if you don't have listings in your paper.
+\usepackage{newfloat}
+\usepackage{listings}
+\DeclareCaptionStyle{ruled}{labelfont=normalfont,labelsep=colon,strut=off} % DO NOT CHANGE THIS
+\lstset{%
+	basicstyle={\footnotesize\ttfamily},% footnotesize acceptable for monospace
+	numbers=left,numberstyle=\footnotesize,xleftmargin=2em,% show line numbers, remove this entire line if you don't want the numbers.
+	aboveskip=0pt,belowskip=0pt,%
+	showstringspaces=false,tabsize=2,breaklines=true}
+\floatstyle{ruled}
+\newfloat{listing}{tb}{lst}{}
+\floatname{listing}{Listing}
+
+%
+% Recommended for better-looking tables
+\usepackage{booktabs}
+
+%
+% Keep the \pdfinfo as shown here. There's no need
+% for you to add the /Title and /Author tags.
+\pdfinfo{
+/TemplateVersion (2027.1)
+}
+
+% DISALLOWED PACKAGES
+% \usepackage{authblk} -- This package is specifically forbidden
+% \usepackage{balance} -- This package is specifically forbidden
+% \usepackage{CJK} -- This package is specifically forbidden
+% \usepackage{float} -- This package is specifically forbidden
+% \usepackage{flushend} -- This package is specifically forbidden
+% \usepackage{fullpage} -- This package is specifically forbidden
+% \usepackage{geometry} -- This package is specifically forbidden
+% \usepackage{hyperref} -- This package is specifically forbidden
+% \usepackage{navigator} -- This package is specifically forbidden
+% (or any other package that embeds links such as navigator or hyperref)
+% \usepackage{indentfirst} -- This package is specifically forbidden
+% \usepackage{layout} -- This package is specifically forbidden
+% \usepackage{multicol} -- This package is specifically forbidden
+% \usepackage{nameref} -- This package is specifically forbidden
+% \usepackage{savetrees} -- This package is specifically forbidden
+% \usepackage{setspace} -- This package is specifically forbidden
+% \usepackage{stfloats} -- This package is specifically forbidden
+% \usepackage{tabu} -- This package is specifically forbidden
+% \usepackage{titlesec} -- This package is specifically forbidden
+% \usepackage{tocbibind} -- This package is specifically forbidden
+% \usepackage{ulem} -- This package is specifically forbidden
+% \usepackage{wrapfig} -- This package is specifically forbidden
+% DISALLOWED COMMANDS
+% \nocopyright -- Your paper will not be published if you use this command
+% \addtolength -- This command may not be used
+% \balance -- This command may not be used
+% \baselinestretch -- Your paper will not be published if you use this command
+% \clearpage -- No page breaks of any kind may be used for the final version of your paper
+% \columnsep -- This command may not be used
+% \newpage -- No page breaks of any kind may be used for the final version of your paper
+% \pagebreak -- No page breaks of any kind may be used for the final version of your paper
+% \pagestyle -- This command may not be used
+% \tiny -- This is not an acceptable font size.
+% \vspace{- -- No negative value may be used in proximity of a caption, figure, table, section, subsection, subsubsection, or reference
+% \vskip{- -- No negative value may be used to alter spacing above or below a caption, figure, table, section, subsection, subsubsection, or reference
+
+\setcounter{secnumdepth}{0} %May be changed to 1 or 2 if section numbers are desired.
+
+% The file aaai2027.sty is the style file for AAAI Press
+% proceedings, working notes, and technical reports.
+%
+
+% Title
+
+% Your title must be in mixed case, not sentence case.
+% That means all verbs (including short verbs like be, is, using,and go),
+% nouns, adverbs, adjectives should be capitalized, including both words in hyphenated terms, while
+% articles, conjunctions, and prepositions are lower case unless they
+% directly follow a colon or long dash
+\title{Sci-VLA: Agentic VLA Inference Plugin for Long-Horizon Tasks in Scientific Experiments}
+
+
+\author {
+    % Authors
+    First Author Name\textsuperscript{\rm 1,\rm 2}\equalcontrib,
+    Second Author Name\textsuperscript{\rm 2}\equalcontrib,
+    Third Author Name\textsuperscript{\rm 1}\corresponding
+}
+\affiliations {
+    % Affiliations
+    \textsuperscript{\rm 1}Affiliation 1\\
+    \textsuperscript{\rm 2}Affiliation 2\\
+    firstAuthor@affiliation1.com, secondAuthor@affilation2.com, thirdAuthor@affiliation1.com
+}
+
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Robotic laboratories play a critical role in autonomous scientific discovery by enabling scalable, continuous experimental execution. Recent vision–language–action (VLA) models offer a promising foundation for robotic laboratories. However, scientific experiments typically involve long-horizon tasks composed of multiple atomic tasks, posing a fundamental challenge to existing VLA models. While VLA models fine-tuned for scientific tasks can reliably execute \textit{atomic} experimental actions seen during training, they often fail to perform \textit{composite} tasks formed by reordering and composing these known atomic actions. This limitation arises from a distributional mismatch between training-time atomic tasks and inference-time composite tasks, which prevents VLA models from executing necessary transitional operations between atomic tasks. To address this challenge, we propose an Agentic VLA Inference Plugin for Long-Horizon Tasks in Scientific Experiments. It introduces an LLM-based agentic inference mechanism that intervenes when executing sequential manipulation tasks. By performing explicit transition inference and generating transitional robotic action code, the proposed plugin guides VLA models through missing transitional steps, enabling reliable execution of composite scientific workflows without any additional training. This inference-only intervention makes our method computationally efficient, data-efficient, and well-suited for open-ended and long-horizon robotic laboratory tasks. We build 3D assets of scientific instruments and common scientific operating scenes within an existing simulation environment. In these scenes, we have verified that our method increases the average success rate per atomic task by 42\% during inference. Furthermore, we show that our method can be easily transferred from the simulation to real scientific laboratories.
+\end{abstract}
+
+% \begin{teaserfigure}
+%   \includegraphics[width=\textwidth]{Figures/figure0-teaserfigure.pdf}
+%   %\vspace{-15px}
+%   \caption{Vision-language-action (VLA) models often suffer from the state gap issue when inferring the open and long-horizon task in scientific scenarios. This paper proposes an agentic VLA inference plugin to generate transitional actions, thus bridging the gaps among composite tasks.
+%   We verify its effectiveness on multiple 3-/5-/8-step tasks in the digital-twin system.}
+%   \vspace{5px}
+%   % \Description{Enjoying the baseball game from the third-base
+%   % seats. Ichiro Suzuki preparing to bat.}
+%   \label{fig0:teaser}
+% \end{teaserfigure}
+
+% Uncomment the following to link to your code, datasets, an extended version or similar.
+% You must keep this block between (not within) the abstract and the main body of the paper.
+% Make sure that you do not de-anonymize yourself with these links.
+% \begin{links}
+%     \link{Code}{https://aaai.org/example/code}
+%     \link{Datasets}{https://aaai.org/example/datasets}
+%     \link{Extended version}{https://aaai.org/example/extended-version}
+% \end{links}
+
+
+\begin{figure*}[!t]
+    \centering
+    \includegraphics[width=\linewidth]{Figures/intro.pdf}
+    \caption{
+    Given a VLA model fine-tuned for atomic tasks in scientific experiments,
+    it may fail to complete the composite task due to the state gap issue.
+    In this paper,
+    we propose a LLM-based agentic inference plugin to generate transitional robotic execution code, enabling execution of the long-horizon tasks. 
+    }
+    \label{fig:motivation}
+\end{figure*}
+
+
+\section{Introduction}
+
+In recent years, the AI4Science paradigm~\cite{wang2023scientific}
+has evolved from single-model approaches~\cite{jumper2021highly,bi2023accurate}
+toward autonomous scientific discovery~\cite{novikov2025alphaevolve,volk2023alphaflow,dai2025adaptive,koscher2023autonomous}. 
+Emerging research aims to directly embed artificial intelligence into scientific workflows to systematically enhance the entire research lifecycle~\cite{koscher2023autonomous,szymanski2023autonomous,boiko2023autonomous}.
+In such a context, a robotic laboratory plays a critical role in enabling autonomous discovery~\cite{burger2020mobile,szymanski2023autonomous,coley2019robotic}. 
+It creates experimental environments with high-precision control, strong reproducibility, and large-scale execution capabilities, substantially accelerating scientific progress while reducing labor and time costs. 
+Moreover, robots capable of continuous, unattended operation significantly reduce researchers’ exposure to hazardous experimental conditions. 
+For example, mobile robotic chemists have demonstrated the feasibility of treating robots as human scientists~\cite {burger2020mobile}. 
+And autonomous laboratories have successfully discovered correct synthesis routes for 41 theoretically predicted materials through large-scale automated material synthesis experiments~\cite{szymanski2023autonomous}.
+
+
+
+Current robotic laboratories typically follow the automation paradigm based on manually programmed, fixed experimental procedures
+~\cite{coley2020autonomous}.
+This choice is largely motivated by the high-precision requirements of scientific experiments. 
+For instance, in high-throughput chemical screening~\cite{macarron2011impact}, 
+a single experimental cycle typically consists of sample preparation and reaction execution, for which fixed programs for robotic arms provide stability guarantees. 
+However, such rigid workflows limit the robot’s ability to reconfigure task sequences or respond to unforeseen situations, making them ineffective in open-ended experimental settings~\cite{ochiai2025automating}. 
+As an example, the parameters of a thermal cycler—such as cycle numbers, temperatures, and durations—must be flexibly adjusted according to experimental objectives, templates, and primers (the scientific instrument in Fig.~\ref{fig:motivation}), and thus cannot be pre-encoded as a single robot trajectory. 
+Researchers have to spend substantial time repeatedly reconfiguring robot parameters in the laboratory.
+
+
+Compared with embodied intelligence approaches~\cite{an2025embodied} based on reinforcement learning~\cite{singh2022reinforcement},
+recent vision–language–action (VLA) models~\cite{black2024pi_0,kim2025openvla} with strong generalization capabilities are better suited to open-ended robotic laboratories. 
+A typical VLA system integrates a vision–language model (VLM)~\cite{zhang2024vision,radford2021learning} with an action module (typically Transformer~\cite{vaswani2017attention}), enabling it to interpret natural language instructions, perceive the current visual scene, and generate low-level robotic control commands. 
+Unlike fixed-program systems, this paradigm allows robots to understand diverse natural language inputs and rapidly switch operational modes, making it potentially promising for open-ended laboratory scenarios.
+
+In general, training data for VLA are difficult to acquire~\cite{mandlekar2023mimicgen}, and training or fine-tuning such models is computationally intensive~\cite{lin2024data}.
+As the set of atomic experimental procedures are generally fixed and finite,
+VLA models can be trained or fine-tuned using data collected only for \textit{atomic} tasks.
+Then, to support diverse experimental protocols, these atomic procedures can be dynamically composed and reordered, resulting in the classic long-horizon challenge in robotics~\cite{fan2025long,gupta2020relay}.
+Interestingly, we observe a long-horizon phenomenon of VLA for scientific experiments: 
+\textit{
+a VLA model fine-tuned for scientific tasks can reliably execute atomic tasks seen during training, yet fails to correctly perform composite tasks constructed from these known atomic actions.}
+As illustrated in Fig.~\ref{fig:motivation} (a), a fine-tuned VLA model can independently execute \texttt{open-thermal-cycler} (Task C.1) and \texttt{place-PCR-plate} (Task C.2), but fails to correctly execute the composite task \texttt{open–place}.
+This limitation stems from the distributional mismatch between training-time data and inference-time task, which prevents VLA from executing the necessary transitional operations between atomic Task C.1 and Task C.2.
+
+To address this challenge, we propose the Agentic VLA Inference Plugin for Long-Horizon Tasks in Scientific Experiments. 
+Given a VLA model fine-tuned for scientific experiments—i.e., one that has mastered atomic tasks—we introduce an LLM-based agentic inference mechanism that intervenes only when execution failures occur.
+The agent promptly identifies the state gap, performs transition inference, and generates 
+transitional robotic
+execution code
+corresponding to the transition, enabling reliable execution of composite scientific workflows. 
+This inference-only intervention eliminates the need for additional training while enabling VLA models to execute long-horizon scientific workflows, making it computationally efficient, data-efficient, and well-suited for open-ended, long-horizon robotic laboratory environments. 
+We design multiple long-horizon scientific operation tasks in a simulation environment, and then we test our method on these long-horizon tasks. Experimental results show that our method can significantly improve the success rate on atomic tasks by about 42\% across various VLA models. And it will enhance the robot's execution coherence between every two continuous atomic tasks.
+
+
+
+\section{Related Work}
+\subsection{Robotic Laboratories}
+
+Robotics labs primarily utilize automated processes involving robotic arms, wheeled robots, and drive shafts to replace human labor in laboratory experiments~\cite{boyd2002robotic}. 
+For example, a self-driven
+thin film laboratories~\cite{macleod2020self}. HTRobot~\cite{zhao2021discovery} can assemble approximately 1400 perovskite film arrangements. 
+A-Lab~\cite{szymanski2023autonomous} uses literature-trained language models and thermodynamically active sensing to propose a solid-state synthesis path. 
+A mobile robot 
+% chemists
+chemist~\cite{burger2020mobile} automatically explores the ten-dimensional photocatalytic parameter space to find catalysts with performance nearly six times that of the initial formulation.
+Adam~\cite{king2009automation} is the first scientist to autonomously discover the function of new genes in yeast through fully automated experiments and hypothesis testing. 
+
+
+
+\subsection{Robot Manipulation}
+\textbf{Reinforcement Learning-based Methods.}
+Reinforcement learning~\cite{singh2022reinforcement}
+is a decision-making approach that interacts with the environment and uses rewards as the learning objective. 
+It has demonstrated success in certain real-world scenarios. For example, a reinforcement-learning robot that can make hot dogs with dual arms~\cite{li2019formal}. A human-in-the-loop reinforcement learning system that achieved strong performance on a wide range of dexterous manipulation tasks~\cite{luo2025precise}. A unified reinforcement learning–based control policy for the whole body to achieve effective shuttlecock tracking and striking~\cite{ma2025learning}.
+However, robots based on reinforcement learning still find it difficult to be deployed in real open-world scenarios~\cite{ghosh2021generalization}. For example, in scientific experimental operations, continuous interactive learning in a real environment may lead to safety issues. Transferring knowledge from offline reinforcement learning to real-world scenarios is quite challenging~\cite{dulac2021challenges}.
+
+\noindent
+\textbf{Vision-Language-Action Models.}
+Compared with the reinforcement learning paradigm, the presence of VLM 
+\cite{zhang2024vision,radford2021learning}
+significantly improves the model's generalization performance in highly open-ended scenarios. 
+Given discrete time steps $t = \{1, \dots, T\}$, 
+visual $o_t^v$, language input $o^l \in \mathcal{O}_l$, 
+action space $a_t \in \mathcal{A}$, and combined information defined as: $\mathcal{H}_t = \{o^l,o_t^v \}$. The goal of VLA is to learn a strategy $\pi: \mathcal{H}_t \rightarrow \mathcal{A}$. Currently, there are two mainstream modeling approaches for VLA: 
+autoregression-based methods~\cite{zitkovich2023rt,kim2025openvla}
+and diffusion-based methods~\cite{black2024pi_0,liurdt}.
+
+Autoregression-based VLAs use combined information $\mathcal{H}_t$ to predict discrete action vectors. First, it maps modal consent to the token sequence: visual observation token $z_t^{v} = f_v(o_t^{v}) \in \mathbb{R}^{N_v \times d}$, language token $z^{l} = f_l(o^{l}) \in \mathbb{R}^{N_l \times d}$. Then, implementing the policy function with a decoder-only transformer:
+\begin{equation}
+    p(z_t^a \mid \mathcal{H}_t) = \mathrm{Transformer}_\theta(\big[ z^{l}, z_1^{v}, \dots, z_{t-1}^{v}, z_t^{v} \big])
+\end{equation}
+where 
+the action token $z_t^a$ is detokenized into discrete action $a_t$:
+\begin{equation}
+    a_t = \mathrm{detokenize}(z_t^a).
+\end{equation}
+For example, RT-2~\cite{zitkovich2023rt} is an early end-to-end autoregression-based model.
+Subsequently, OpenVLA~\cite{kim2025openvla} replaces the VLM base with an open-source large model, further accelerating VLA model development. $\pi_0\_fast$~\cite{pertsch2025fast} is an autoregressive VLA model that uses a fast tokenizer, enhancing training speed.
+
+The diffusion-based method primarily follows the stepwise denoising paradigm of diffusion models, enabling VLA to predict continuous actions. Define an action chunk with a time length of $H$ and a starting time step $t$: $a_{t:t+H}$. Diffusion-based VLA implementing conditional probability distribution $p(a_{t:t+H} \mid \mathcal{H}_t, \tilde{a}_{t:t+H})$, where $\tilde{a}_{t:t+H} \sim \mathcal{N}(0, I)$ is a noisy action chunk. The final continuous action vector needs to be obtained through multiple denoising steps.
+For example, diffusion policy~\cite{chi2025diffusion} uses the diffusion model idea to generate action trajectories. RDT~\cite{liurdt} uses more dual-arm robot training data and a larger transformer architecture, significantly improving zero-shot generalization performance. 
+$\pi_0$~\cite{black2024pi_0} and $\pi_{0.5}$~\cite{black2025pi_} use flow matching algorithms to gradually denoise actions. 
+They use the lightweight VLM: PaliGemma~\cite{beyer2024paligemma} as the base model. After fine-tuning on large-scale robot demonstration data, $\pi_0$ and $\pi_{0.5}$ achieve extremely strong generalization performance and can adapt to various household tasks.
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/avip.pdf}
+  \caption{The illustration of the Sci-VLA pipeline. Includes two modules: transitional action generation and transitional action insertion. The plugin and VLA will alternate in executing the sequence of atomic tasks.}
+  \label{figs:avip}
+\end{figure*}
+
+\noindent
+\textbf{Long-Horizon Challenges.}
+Long-horizon tasks are complex tasks that span many time steps, typically formed by concatenating multiple atomic tasks.
+Solving a long-horizon task involves decomposing it into independent atomic tasks and optimizing each one. In reinforcement learning, hierarchical reinforcement learning is primarily used to decompose and solve long-horizon tasks~\cite{dietterich2000hierarchical,konidaris2009skill}. 
+However, task decomposition can lead to issues such as error accumulation because it does not account for the connections and dependencies among atomic tasks. This is a challenge called skill chaining~\cite{konidaris2009skill} that needs to be addressed by hierarchical reinforcement learning methods. For example, a reinforcement learning-based dressing robot that aligns the state distributions of pre- and post-tasks to address the skill chaining problem~\cite{clegg2018learning}. Sequential dexterity is a reinforcement learning system that progressively finetunes the sub-policies to enhance the chaining success rate~\cite{chen2023sequential}.
+
+VLA models leverage the task decomposition capabilities of VLM backbones or incorporate atomic task decomposition during training, which improve the model's generalization to long-horizon tasks. For example, $\pi_{0.5}$~\cite{black2025pi_} adds task decomposition data pairs during VLM pretraining.
+LohoVLA~\cite{yang2025lohovla} generates token information for atomic tasks before generating action tokens. LongVLA~\cite{fan2025long} allows the model to focus on different visual information during different phases of movement and interaction, reducing the interference of redundant information during the task transition periods. 
+However, most of this work focuses on task decomposition and dataset processing, requiring training to achieve performance on long-horizon tasks.
+
+
+% \clearpage
+% \newpage
+
+\section{Sci-VLA: Agentic VLA Inference Plugin}
+We design a plugin to assist VLA's inference. Specifically, when an atomic task sequence arrives, the plugin will repeatedly generate transitional actions between every two atomic tasks (when the first of the two atomic tasks is somehow failed) and insert transitional actions into the original actions output by VLA.
+
+% \begin{figure*}[!t]
+%   \centering
+%   \includegraphics[width=\linewidth]{Figures/3dasset.pdf}
+%   %\vspace{-5px}
+%   \caption{Some scientific simulated objects we used and their corresponding real object. Top: 3D simulated assets. Bottom: real objects. (a) Pipette. (b) Pipette rack. (c) Centrifuge tube rack. (d) Centrifuge tube plate. (e) 3D printer.}
+%   \label{figs:3d1}
+% \end{figure*}
+
+\subsection{Inference Atomic Tasks Sequence}
+In the Sci-VLA inference process, the generation module generates a transitional action code after receiving the next atomic task $i+1$ prompt. 
+Then the insertion module interrupts VLA's inference when the pre-atomic-task $i$ finishes. 
+The transitional actions will be generated and inserted into the action sequence. 
+Finally, the VLA resumes inference for the subsequent task (See in Fig.~\ref{figs:avip}).
+The two modules operate iteratively. This cycle continues until the entire long-horizon task is finished.
+
+\textbf{Transitional Action Generation Module.}
+When VLA's inference stops, the current information will be easily obtained, including the current joint positions $curr\_state$, the current main camera view image $o^v_t$, and the description of the next atomic task $o^l_{i+1}$. Then, the generation module retrieves the possible target proprioception $target\_state$ from the training data $\mathcal{D}$ by the target task description $o_{i+1}^l$. 
+Specifically, we first extract a description set $\mathcal{P}=\{p_1, \dots, p_K\}$ containing all descriptions of atomic tasks, where $K$ stands for the number of training tasks. Then we let a LLM agent identify the task whose semantics are closest to the target task. It allows us to extract the target atomic task's first joint position.
+\begin{equation}
+    \mathcal{P} = Extract(\mathcal{D})
+\end{equation}
+\begin{equation}
+    target\_{pos} = Search(o^l_{i+1}, \mathcal{P}, \mathcal{D})
+\end{equation}
+
+
+
+
+
+After obtaining all the information we need, use a LLM coding agent to generate transitional action code $\mathcal{C}_{i \rightarrow i+1}$.
+\begin{equation}
+    \mathcal{C}_{i \rightarrow i+1} = \texttt{LLM}(o^l_{i+1},o^v_t,target\_state,curr\_state)
+\end{equation}
+
+However, contents generated by LLMs may exhibit hallucination. 
+% {\color{blue}However, LLMs often suffer from semantic hallucinations.}
+To address this issue and obtain the specified executable target code, we 
+%additionally provided
+provide an output template in the prompt (See in Fig.~\ref{figs:app3}). We annotate the parts that need to be modified in the execute function and provide each movable interface, 
+such as translating along a certain axis and joint recovery. 
+% {\color{blue}including Cartesian axis translation and joint state recovery primitives.}
+For the Agent, it only needs to analyze the direction and value of the end-effector movement.
+% {\color{blue}This approach simplifies the agent's task. It only needs to determine the direction and magnitude of end-effector displacements.}
+
+Meanwhile, safety is the primary priority
+in scientific experiments. 
+In both prompts and code templates, we add certain constraint terms, such as ``avoiding collisions''. 
+% {\color{blue}We add certain constraint terms, such as ``avoiding collisions'', in both prompts and code templates.}
+Additionally, in the code template, we set some rules: first, we must check whether the gripper of the robotic arm needs to be released and whether there are any obstacles near the gripper and the arm. 
+This establishes that the first part of the transitional action is obstacle avoidance: moving the gripper to a safe position. Then, the target joint position is restored using the retrieved data.
+% {\color{blue}Consequently, the initial phase of each transitional action focuses on moving the gripper to a secure position for obstacle avoidance. Subsequently, the system restores the target joint pose using retrieved demonstration data.}
+Once the restoration is successful, the VLA inference process can proceed. Fig.~\ref{figs:app2} illustrates an example of a generated result, where we first let the robotic arm avoid obstacles as much as possible, and then use the joint recovery function to reach the target joint positions.
+When the code is generated, control switches to the insertion module.
+
+\textbf{Transitional Action Insertion Module.}
+The insertion module is an action switch that toggles between the plugin and VLA.
+We set the maximum runtime $T_i$ for each atomic task in advance 
+(in the experiment section, this is the average demonstration time per atomic task). 
+% {\color{blue}, which corresponds to the average demonstration duration.}
+When the VLA reaches the final inference step, the module terminates the inference process regardless of the task completion status.
+In practice, if we do not actively terminate the VLA inference, the robotic arm will continue to tremble.
+% {\color{blue} this active termination prevents execution jittering in the robotic arm.}
+Once the transitional actions are generated by the generation module, VLA's inference is restored, allowing it to continue automatically executing the next atomic task.
+% {\color{blue}Following the generation of transitional actions, SciVLA resumes VLA inference to automatically initiate the subsequent atomic task.}
+
+
+
+
+
+
+\subsection{Digital Twin}
+
+We utilize a simulated scientific laboratory system to verify our method.
+This simulation facilitates efficient data collection and prevents potential damage to physical instruments. 
+In this paper, we employ the Autobio~\cite{lan2025autobio} laboratory environment, a biology lab built on the MuJoCo engine.
+It incorporates essential instruments and equipment for biological research.
+Experimental operations are performed using the UR5e robotic arm for long-horizon tasks. 
+Additionally, to verify the effectiveness of our method, we 
+have constructed a 
+real-world scenario based on the simulation system to demonstrate the transferability of Sci-VLA from simulation to a real laboratory.
+
+
+
+% \begin{figure}[!t]
+%   \centering
+%   \includegraphics[width=\linewidth]{Figures/new3dasset.pdf}
+%   \caption{Some newly added instrument 3D assets examples. (a) Ozone cleaner. (b) Spin coater. (c) Hot plate. }
+%   \label{figs:3d2}
+% \end{figure}
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/coherence.pdf}
+  \caption{Action trajectory recording diagram for base model $\pi_0$ executing task sequence in 2 situations: simulation and real-world. The yellow lines represent the trajectory of the end effector. The dashed box indicates the trajectory of the transitional actions.
+  Simulated cleaning table task: 
+  pick 3 objects into the basket.   
+  }
+  \label{figs:coherence}
+\end{figure*}
+
+
+\section{Experiments} 
+\label{sec:exp}
+\subsection{Experiments Setup}
+
+\textbf{Task Setup.}
+First, we design a ``cleaning table'' task in pick-and-place scenarios. It is composed of 3 pick-and-place atomic tasks: 
+(1) \texttt{pick pipette tip box into the basket},
+(2) \texttt{pick PCR plate into the basket}, and
+(3) \texttt{pick centrifuge tube into the basket} (See in Fig.~\ref{figs:cleaning}). 
+The order of atomic tasks goes from simple to difficult. 
+For example, a PCR plate is harder to pick up than a pipette tip box because it is wider and thinner. Centrifuge tubes have a smaller diameter, requiring more precise handling.
+
+Then, we design 6 long-horizon tasks specifically for scientific operations (See in Fig.~\ref{figs:taskABCDEF}). These long-horizon tasks are primarily designed around interactions between scientific instruments (e.g., centrifuges and thermal cyclers) and objects (e.g., tube racks, tubes, and PCR plates). The end state of the previous atomic task will affect the execution of the next atomic task. For example, if the centrifuge lid does not open, placing the centrifuge tubes will inevitably fail. 
+
+
+We collect all these atomic tasks separately, and in each atomic task, we randomize the scenes. For example, test tubes are placed in a randomly selected slot on a rack, and PCR plates appear randomly within a designated area.
+During the inference phase, we will fix the prompt for each long task. Each time, we make slight perturbations to the robotic arm's initial state. 
+
+
+\textbf{Evaluation Metrics.}
+For each long task sequence, we let Sci-VLA and the base VLA model repeatedly test 20 times. One inference refers to a long task from atomic task 1 to the last atomic task. We define from the end state of atomic task $i$ to the end state of atomic task $i+1$ as an atomic execution process. In each process, we record the success count over 20 tries. 
+All the data in the tables is obtained from executing complete action sequences.
+
+
+\subsection{Results}
+
+\subsubsection{Basic Validation}\label{sec:basic}
+We select two diffusion-based VLAs $\pi_0$~\cite{black2024pi_0} and $\pi_{0.5}$~\cite{black2025pi_} and one autoregression-based VLA $fast$~\cite{pertsch2025fast} as our base models.
+We generate 100 demonstrations for each atomic task in ``cleaning table'' and fine-tune all three base models for 80,000 steps.
+Then set the maximum inference time for each atomic task to 3 seconds. If the time limit is exceeded, the inference is automatically terminated, and the process immediately moves on to the next atomic task.
+
+
+
+As shown in Tab.~\ref{tab:cleaning}, base VLA models only achieve good performance on the first atomic task. 
+Since our atomic task training data are collected separately, tasks can easily lack transitions.
+The robotic arm enters an out-of-distribution state after finishing the first task. 
+It shows that VLA only memorizes the trajectory, without truly understanding the tasks.
+In addition, it can be observed that Sci-VLA has a low success rate on atomic task 2 and 3, which is due to the different performance of the base VLA models. It can be seen that $\pi_0$ and $\pi_{0.5}$ generalize better than $fast$.
+Compared to $\pi_0$, $\pi_{0.5}$ is better suited for more challenging atomic tasks.
+
+
+
+\begin{table}[!t]
+% \setlength{\tabcolsep}{1pt}
+\label{tab:cleaning}
+\begin{tabular}{cccc}
+\toprule
+\multirow{2}{*}{Method}&\multicolumn{3}{c}{Success Rate}\\
+\cline{2-4}
+&Atomic task 1&Atomic task 2&Atomic task 3\\
+\midrule
+$\pi_0$  & 14/20 (70\%) & 0/20 (0\%) & 0/20 (0\%)\\
+\multirow{2}{*}{Sci-$\pi_0$} & \cellcolor{gray!25}14/20 (70\%) & \cellcolor{gray!25}\textbf{10/20 (50\%)} & \cellcolor{gray!25}4/20 (20\%)\\ 
+&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$50\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$20\%\uparrow$}\\ \hline
+
+$\pi_{0.5}$  &13/20 (65\%) & 0/20 (0\%) & 0/20 (0\%) \\
+\multirow{2}{*}{Sci-$\pi_{0.5}$} &\cellcolor{gray!25}12/20 (60\%)&\cellcolor{gray!25}3/20 (15\%)& \cellcolor{gray!25}\textbf{9/20 (45\%)}\\ 
+&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$15\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$45\%\uparrow$}\\ \hline
+
+$fast$  &10/20 (50\%) & 0/20 (0\%) & 0/20 (0\%) \\
+\multirow{2}{*}{Sci-$fast$} &\cellcolor{gray!25}10/20 (50\%) & \cellcolor{gray!25}5/20 (25\%) & \cellcolor{gray!25}5/20 (25\%) \\
+&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$25\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$25\%\uparrow$}\\
+\bottomrule
+\end{tabular}
+\caption{Results of the baseline comparison for the ``cleaning table'' task. ``Sci-'' means the model uses our inference plugin. Test a total of 20 times. Each test requires the model to complete an entire atomic task sequence. Data statistics only check the final state of each atomic task.}
+\end{table}
+
+
+\subsubsection{Atomic Task Coherence}
+In the ``cleaning table'' task, Sci-VLA achieves higher task coherence (shown in Fig.~\ref{figs:coherence}). 
+The base model $\pi_0$ is confused when starting the second atomic task, exhibiting continuous jitter. This jitter will not stop until the entire inference time is exhausted. 
+On the contrary, Sci-$\pi_0$ maintains a complete execution trajectory throughout all the atomic tasks. 
+Even if one atomic task fails, Sci-$\pi_0$'s transitional actions ensure that subsequent tasks' actions.
+ 
+
+
+% \begin{figure*}[!ht]
+%   \centering
+%   \includegraphics[width=\linewidth]{Figures/taskABCD.pdf}
+%   \caption{Results of four 5-element tasks in the centrifuge and thermal cycler operation scenario. Top: Schematic diagram of continuous atomic tasks for operating an instrument (task A, B, C and D in Tab.~\ref{tab:task}). The atomic tasks are related to each other and vary in difficulty. Bottom: Success rates of task inference repeated 20 times.}
+%   \label{figs:taskABCD}
+% \end{figure*}
+
+% \begin{figure*}[!ht]
+%   \centering
+%   \includegraphics[width=\linewidth]{Figures/taskEF.pdf}
+%   \caption{Results of two 8-element tasks in both two operation settings. Top: Schematic diagram of continuous atomic tasks for operation (task E and F in Tab.~\ref{tab:task}). The atomic tasks are related to each other and vary in difficulty. atomic tasks may appear repeatedly. Bottom: Success rates of task inference repeated 20 times.}
+%   \label{figs:taskEF}
+% \end{figure*}
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/taskABCDEF.pdf}
+  \caption{Results of scientific operations in the centrifuge and thermal cycler scenario. Top left: Flow charts of continuous atomic tasks for operating instruments. Top right: Images from the wrist camera of 3 atomic tasks with high precision requirements. Bottom: Success rates of each atomic task. Each sequence is tested 20 times.}
+  \label{figs:taskABCDEF}
+\end{figure*}
+
+
+\subsubsection{Long Experimental Operation Tasks}
+For scientific operations, we collect 100 demonstration data for each atomic task in simulation (a total of 14 different atomic tasks). 
+We use these 7 long-horizon datasets to fine-tune VLA for 50,000 steps on 2 NVIDIA H100 GPUs. 
+% {\color{blue} These demonstrations are mixed and processed with a batch size of 32 to fine-tune $\pi_0$ for 100,000 steps using four NVIDIA H100 GPUs.}
+Then the fine-tuned models are prepared to perform tasks with a robotic arm under random initial disturbances. 
+
+% We still report the success rate for each atomic task, like in Sec.~\ref{sec:basic}. 
+As shown in Fig.~\ref{figs:taskABCDEF}, Sci-VLA still achieves a higher success rate in scientific scenarios, regardless of the length of the task sequence. {Notably}, we observe some counterintuitive phenomena in the baseline results: the high success rates for task A.4 (\texttt{close centrifuge lid}) and task C.3 (\texttt{close thermal cycler lid}). 
+The reason is that the initial states of task A4 align with the end state of A3. The gripper happened to be on the lid when performing task A.4. This indicates a strong reliance on the data among these base VLA models, as the limited training set does not include all joint positions. 
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/real_demo.pdf}
+  \caption{Real scenario of operating the thermal cycler (Task $C1 \rightarrow C2$). The trajectories within the dashed box indicate transitional actions.}
+  \label{figs:real}
+\end{figure*}
+
+Theoretically, 
+Sci-VLA focuses only on transitions between atomic tasks and does not address issues within those tasks. Therefore, for some tasks with high precision requirements, such as \texttt{placing centrifuge tube} or \texttt{placing a PCR plate into slots}(See top right in Fig.~\ref{figs:taskABCDEF}), the success rate depends solely on the VLA base model itself. Fig.~\ref{figs:pcr} is an example of the thermal cycler slot. A PCR plate usually has many wells, and placing it into a slot from above requires extremely high precision. 
+Additionally, PCR plates may be soft, and when the gripper holds the plate, deformation may occur. This situation significantly increases the difficulty of the atomic task. 
+Future research should prioritize improving operational precision and balancing the distribution of simple and complex demonstrations in datasets to mitigate training imbalances.
+
+
+ \begin{figure}[!t]
+  \centering
+   \includegraphics[width=\linewidth]{Figures/cleaning.pdf}
+  \caption{The flow chart of ``cleaning table'' is composed of simple pick-and-place tasks. The order of execution goes from simple to difficult. Arrows represent the end effector's motion trajectory.}
+  \label{figs:cleaning}
+ \end{figure}
+
+
+
+
+
+\begin{table*}[!ht]
+    \setlength{\tabcolsep}{0.3pt}
+  \label{tab:sci-ops}
+  \begin{tabular}{ccccccccccc}
+    \toprule
+    \multirow{2}{*}{Number}&\multirow{2}{*}{Method}&\multicolumn{9}{c}{Success Rate}\\
+    \cline{3-11}
+    &&Atomic 1&Atomic 2&Atomic 3&Atomic 4&Atomic 5&Atomic 6&Atomic 7&Atomic 8&Overall\\
+    \midrule
+    
+    \multirow{3}{*}{A}& $\pi_0$ & 20/20 (100\%) & 0/20 (0\%) &0/20 (0\%)&12/20 (60\%)&0/20 (0\%)&-& -&-& 32/100 (32\%)\\
+    &\multirow{2}{*}{Sci-$\pi_0$} & \cellcolor{gray!25}20/20 (100\%) & \cellcolor{gray!25}\textbf{6/20 (30\%)} & \cellcolor{gray!25}\textbf{3/20 (15\%)} & \cellcolor{gray!25}\textbf{20/20 (100\%)} & \cellcolor{gray!25}\textbf{19/20 (95\%)} &\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}\textbf{68/100 (68\%)}\\
+    
+    &&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$30\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$15\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$40\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$95\%\uparrow$}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$36\%\uparrow$}\\
+    
+    \cline{1-11}
+    \multirow{3}{*}{B}&$\pi_0$& 20/20 (100\%) & 0/20 (0\%) &0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&-& -&- &20/100 (20\%)\\
+    &\multirow{2}{*}{Sci-$\pi_0$} & \cellcolor{gray!25}20/20 (100\%) & \cellcolor{gray!25}\textbf{20/20 (100\%)} &\cellcolor{gray!25}\textbf{5/20 (25\%)}&\cellcolor{gray!25}0/20 (0\%)&\cellcolor{gray!25}\textbf{15/20 (75\%)}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}\textbf{60/100 (60\%)}\\
+    
+    &&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$100\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$25\%\uparrow$}&\cellcolor{gray!25}{-}&\cellcolor{gray!25}{\color{violet}$75\%\uparrow$}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$40\%\uparrow$}\\
+    
+    \cline{1-11}
+    \multirow{3}{*}{C}&$\pi_0$& 18/20 (90\%) &0/20 (0\%) &12/20 (60\%)&0/20 (0\%)&0/20 (0\%)&-&-&- &30/100 (30\%)\\
+    &\multirow{2}{*}{Sci-$\pi_0$} & \cellcolor{gray!25}20/20 (100\%) & \cellcolor{gray!25}\textbf{10/20 (50\%)} &\cellcolor{gray!25}\textbf{20/20 (100\%)}&\cellcolor{gray!25}\textbf{14/20 (70\%)}&\cellcolor{gray!25}\textbf{18/20 (90\%)}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}\textbf{82/100 (82\%)}\\
+    
+    &&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$50\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$40\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$70\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$90\%\uparrow$}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$52\%\uparrow$}\\
+    
+    \cline{1-11}
+    \multirow{3}{*}{D}&$\pi_0$& 15/20 (75\%) & 0/20 (0\%) &0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&-&-&- &15/100 (15\%)\\
+    &\multirow{2}{*}{Sci-$\pi_0$} & \cellcolor{gray!25}16/20 (80\%) & \cellcolor{gray!25}\textbf{10/20 (50\%)} &\cellcolor{gray!25}\textbf{18/20 (90\%)}&\cellcolor{gray!25}\textbf{2/20 (10\%)}&\cellcolor{gray!25}\textbf{18/20 (90\%)}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}\textbf{64/100 (64\%)}\\
+    
+    &&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$50\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$90\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$10\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$90\%\uparrow$}&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$49\%\uparrow$}\\
+    
+    \cline{1-11}
+    \multirow{3}{*}{E}&$\pi_0$&  20/20 (100\%) & 0/20 (0\%)&0/20 (0\%)&10/20 (50\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%) &30/160 (18.75\%)\\
+    &\multirow{2}{*}{Sci-$\pi_0$} &  \cellcolor{gray!25}20/20 (100\%) & \cellcolor{gray!25}\textbf{3/20 (15\%)} & \cellcolor{gray!25}\textbf{2/20 (10\%)} & \cellcolor{gray!25}\textbf{20/20 (100\%)} & \cellcolor{gray!25}\textbf{17/20 (85\%)} &\cellcolor{gray!25}\textbf{15/20 (75\%)}&\cellcolor{gray!25}\textbf{2/20 (10\%)}&\cellcolor{gray!25}\textbf{13/20 (65\%)}&\cellcolor{gray!25}\textbf{92/160 (57.50\%)}\\
+    
+    &&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$15\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$10\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$50\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$85\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$75\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$10\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$65\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$38.75\%\uparrow$}\\
+    
+    \cline{1-11}
+    \multirow{3}{*}{F}&$\pi_0$& 19/20 (95\%) & 0/20 (0\%)&15/20 (75\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)& 34/160 (21.25\%)\\
+    &\multirow{2}{*}{Sci-$\pi_0$} & \cellcolor{gray!25}19/20 (95\%) & \cellcolor{gray!25}\textbf{9/20 (45\%)} &\cellcolor{gray!25}\textbf{18/20 (90\%)}&\cellcolor{gray!25}\textbf{18/20 (90\%)}&\cellcolor{gray!25}\textbf{15/20 (75\%)}&\cellcolor{gray!25}\textbf{7/20 (35\%)}&\cellcolor{gray!25}\textbf{12/20 (60\%)}&\cellcolor{gray!25}0/20 (0\%)&\cellcolor{gray!25}\textbf{98/160 (61.25\%)}\\
+    
+    &&\cellcolor{gray!25}-&\cellcolor{gray!25}{\color{violet}$45\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$15\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$90\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$75\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$35\%\uparrow$}&\cellcolor{gray!25}{\color{violet}$60\%\uparrow$}&\cellcolor{gray!25}{-}&\cellcolor{gray!25}{\color{violet}$40.00\%\uparrow$}\\
+  \bottomrule
+\end{tabular}
+\caption{Results of repeatedly performing multiple long-term science operation tasks 20 times. }
+\end{table*}
+
+% \begin{table*}[!ht]
+%     % \setlength{\tabcolsep}{2pt}
+%   \caption{Results of repeatedly performing multiple long-term science operation tasks 20 times. }
+%   \begin{tabular}{ccccccc}
+%     \toprule
+%     \multirow{2}{*}{Number}&\multirow{2}{*}{Method}&\multicolumn{5}{c}{Success Rate}\\
+%     \cline{3-7}
+%     &&atomic task 1&atomic task 2&atomic task 3&atomic task 4&atomic task 5\\
+%     \midrule
+%     \multirow{2}{*}{A}& $\pi_0$ & 20/20 (100\%) & 0/20 (0\%) &0/20 (0\%)&12/20 (60\%)&0/20 (0\%) \\
+%     &$\pi_0$+AVIP & 20/20 (100\%) & \textbf{6/20 (30\%)} & \textbf{3/20 (15\%)} & \textbf{20/20 (100\%)} & \textbf{19/20 (95\%)} \\
+%     \cline{1-7}
+%     \multirow{2}{*}{B}&$\pi_0$ & 20/20 (100\%) & 0/20 (0\%) &0/20 (0\%)&0/20 (0\%)&0/20 (0\%) \\
+%     &$\pi_0$+AVIP & 20/20 (100\%) & \textbf{20/20 (100\%)} &\textbf{5/20 (25\%)}&0/20 (0\%)&\textbf{15/20 (75\%)}\\
+%     \cline{1-7}
+%     \multirow{2}{*}{C}&$\pi_0$ & 18/20 (90\%) &0/20 (0\%) &12/20 (60\%)&0/20 (0\%)&0/20 (0\%) \\
+%     &$\pi_0$+AVIP & 20/20 (100\%) & \textbf{10/20 (50\%)} &\textbf{20/20 (100\%)}&\textbf{14/20 (70\%)}&\textbf{18/20 (90\%)}\\
+%     \cline{1-7}
+%     \multirow{2}{*}{D}&$\pi_0$ & 15/20 (75\%) & 0/20 (0\%) &0/20 (0\%)&0/20 (0\%)&0/20 (0\%) \\
+%     &$\pi_0$+AVIP & 16/20 (80\%) & \textbf{10/20 (50\%)} &\textbf{18/20 (90\%)}&\textbf{2/20 (10\%)}&\textbf{18/20 (90\%)}\\
+%   \bottomrule
+% \end{tabular}
+% \end{table*}
+
+
+% \begin{table*}[!ht]
+% \setlength{\tabcolsep}{2pt}
+%   \caption{Results of repeatedly performing multiple long-term science operation tasks 20 times. }
+%   \begin{tabular}{cccccccccc}
+%     \toprule
+%     \multirow{2}{*}{Number}&\multirow{2}{*}{Method}&\multicolumn{8}{c}{Success Rate}\\
+%     \cline{3-10}
+%     &&atomic task 1&atomic task 2&atomic task 3&atomic task 4&atomic task 5&atomic task 6&atomic task 7&atomic task 8\\
+%     \midrule
+%     \multirow{2}{*}{E}&$\pi_0$ &  20/20 (100\%) & 0/20 (0\%)&0/20 (0\%)&10/20 (50\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%) \\
+%     &$\pi_0$+AVIP &  20/20 (100\%) & \textbf{3/20 (15\%)} & \textbf{2/20 (10\%)} & \textbf{20/20 (100\%)} & \textbf{17/20 (85\%)} &\textbf{15/20 (75\%)}&\textbf{2/20 (10\%)}&\textbf{13/20 (65\%)}\\
+%     \cline{1-10}
+%     \multirow{2}{*}{F}&$\pi_0$ & 19/20 (95\%) & 0/20 (0\%)&15/20 (75\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%)&0/20 (0\%) \\
+%     &$\pi_0$+AVIP & 19/20 (95\%) & \textbf{9/20 (45\%)} &\textbf{18/20 (90\%)}&\textbf{18/20 (90\%)}&\textbf{15/20 (75\%)}&\textbf{7/20 (35\%)}&\textbf{12/20 (60\%)}&0/20 (0\%)\\
+%   \bottomrule
+% \end{tabular}
+% \end{table*}
+
+\subsubsection{Ablation Tests}
+We present an ablation designed to evaluate the following scenarios:
+\begin{enumerate}
+    \item Direct interpolation utilizing \texttt{current\_qpos} and \texttt{target\_state}.
+    \item Operation without the use of either \texttt{current\_qpos} or \texttt{target\_state}.
+    \item Our proposed method: Sci-VLA.
+\end{enumerate}
+
+By testing on the long task C.1$\rightarrow$C.2 10 times, the results conclusively demonstrate that \texttt{current\_qpos} and \texttt{target\_state} are indispensable inputs. The combination of pose restore and LLM-driven obstacle avoidance planning is what ultimately guarantees the successful completion of the tasks.
+
+\begin{table}[!t]
+% \setlength{\tabcolsep}{1pt}
+\label{tab:ablation_long_task}
+\begin{tabular}{lccc}
+\toprule
+Method & C.1 & C.2 & Collision \\
+\midrule
+LLM only & 9/10 & 1/10 & 0/10 \\
+Direct interpolation & 9/10 & 0/10 & 10/10 \\
+Ours(LLM + interpolation) & 9/10 & \textbf{7/10} & 0/10 \\
+\bottomrule
+\end{tabular}
+\caption{Ablation results on the long task C.1$\rightarrow$C.2.}
+\end{table}
+
+\subsubsection{LLM Inference Time}
+The total execution time of the task includes the VLA inference time and the inference time of our plug-in. LLM inference time is dependent on model size and hardware specifications, as is VLA inference. Therefore, the proportion of the total task duration spent on LLM inference varies. To document this variability, we compiled a comparative table: we tested smaller, open-source models deployed locally on the C.1$\rightarrow$C.2 task 10 times A direct comparison with GPT was not possible due to sudden, region-specific access restrictions.
+
+In these tests, VLA inference was executed on a single NVIDIA H100 GPU, while local LLM inference utilized a single NVIDIA A800 GPU. The results demonstrated that switching to a smaller model effectively reduced inference time while simultaneously maintaining the success rate of subsequent tasks.
+
+\begin{table}[t]
+\label{tab:llm_inference_time}
+\begin{tabular}{lccc}
+\toprule
+Model & Average & Total & C.2 \\
+\midrule
+qwen3.5-397b-a17b & 185s (81\%) & 227s (100\%) & 8/10 \\
+qwen3.5-35b-a3b (local) & 69s (60\%) & 115s (100\%) & 7/10 \\
+qwen3.5-9b (local) & 55s (56\%) & 99s (100\%) & 5/10 \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of LLM inference time and task performance on the C.1$\rightarrow$C.2 task.}
+\end{table}
+
+\subsubsection{Real Environment Demonstration}
+In this subsection, we verify that our method is not only applicable in simulated environments but also effective in real laboratory settings. 
+We set up a real-world task scenario based on Task C in Fig.~\ref{figs:taskABCDEF}: operating a thermal cycler. This composite task consists of two atomic tasks: C.1:\texttt{opening the thermal cycler lid} and C.2:\texttt{placing a PCR plate inside}. 
+
+We finetune $\pi_0$ with these two atomic tasks. Fig.~\ref{figs:real} illustrates a live demonstration of this sequence, showing the decomposition of actions in the transition trajectory inferred by our method. During this demonstration, the robotic arm first moves to a position away from the instrument cover. Then, the gripper releases, ensuring the execution of the next atomic task. Finally, the robotic arm moves to the starting position of the next atomic task. The trajectory of task C.1 to C.2 is complete and coherent.
+
+
+\section{Conclusion}
+This paper proposes an inference plugin for VLA models in scientific robot manipulation, requiring no retraining. It aims to address the discontinuity in transitions between atomic tasks during high-intensity, continuous atomic-task operations at the VLA.
+ Additionally, we augment the biological laboratory simulation environment provided by Autobio with objects and instruments commonly used in other laboratories (e.g., chemistry) and establish a test framework for continuous operational tasks in scientific laboratories. 
+ Experiments show that Sci-VLA will improve the success rate of subsequent atomic tasks and enhance their coherence.
+
+Although our plugin includes some safety constraints in the code template, 
+it cannot completely guarantee the correctness of the action trajectories generated by the LLM. 
+In cases where collisions are likely, we will let LLM agents repeatedly generate new actions, which will slow down the inference of the entire task.
+Future work could focus on aligning LLM-agent and VLA inference times to minimize latency. Or use a locally fine-tuned code agent for transitional action reasoning, which can eliminate the impact of network latency.
+
+Meanwhile, our experiments show that VLA is highly sensitive to the quality of the training set. VLA continues to improve its generalization performance on new scenarios and tasks, relying on the diligent data-collection efforts of researchers. In future work, VLA should adapt low-quality data to learn high-quality execution capabilities.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\linewidth]{Figures/pcr.pdf}
+  \caption{Top: 3D assets of a thermal cycler slot (left) and a PCR plate (right).
+  Bottom: corresponding real objects}
+  \label{figs:pcr}
+\end{figure}
+
+
+\bibliography{refs}
+
+\input{ReproducibilityChecklist.tex}
+
+\end{document}
