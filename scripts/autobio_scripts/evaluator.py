@@ -13,6 +13,51 @@ from serialize import STATE_SPEC
 
 Policy: TypeAlias = Callable[[dict], np.ndarray]
 
+
+def capture_prompt_initial_state(data, state_indices, action_indices) -> dict:
+    return {
+        "qpos": np.asarray(data.qpos[list(state_indices)], dtype=np.float64).copy(),
+        "ctrl": np.asarray(data.ctrl[list(action_indices)], dtype=np.float64).copy(),
+    }
+
+
+def restore_prompt_initial_state_direct(
+    *,
+    task,
+    data,
+    state_indices,
+    action_indices,
+    initial_state: dict,
+    num_steps: int = 250,
+) -> int:
+    state_indices = list(state_indices)
+    action_indices = list(action_indices)
+    if len(action_indices) == 0:
+        return 0
+
+    target = np.asarray(initial_state["qpos"], dtype=np.float64).reshape(-1)
+    if target.size != len(action_indices):
+        target = np.asarray(initial_state["ctrl"], dtype=np.float64).reshape(-1)
+    if target.size != len(action_indices):
+        raise ValueError(
+            f"Initial restore target dim {target.size} does not match action dim {len(action_indices)}"
+        )
+
+    current = np.asarray(data.qpos[state_indices], dtype=np.float64).reshape(-1)
+    if current.size != target.size:
+        current = np.asarray(data.ctrl[action_indices], dtype=np.float64).reshape(-1)
+    if current.size != target.size:
+        raise ValueError(
+            f"Current restore state dim {current.size} does not match target dim {target.size}"
+        )
+
+    steps = max(1, int(num_steps))
+    for alpha in np.linspace(1.0 / steps, 1.0, steps):
+        data.ctrl[action_indices] = current + alpha * (target - current)
+        task.step_and_log({})
+    return steps
+
+
 def make_thermal_mixer_extra(task: Task):
     from copy import deepcopy
     from instrument import Thermal_mixer_eppendorf_c
@@ -394,6 +439,7 @@ class Evaluator:
         time_limit: float | None = None,
         prompts: list[str] | None = None,
         use_transition_generation: bool = True,
+        transition_mode: str = "auto",
         no_planning: bool = False,
         no_interpolation: bool = False,
         control_fps: float = 50.0,
@@ -423,6 +469,16 @@ class Evaluator:
         transition_count = 0
         executed_action_count = 0
         settle_duration = 0.0
+        effective_transition_mode = (transition_mode or "auto").strip().lower()
+        if effective_transition_mode == "auto":
+            effective_transition_mode = "llm" if use_transition_generation else "none"
+        if effective_transition_mode not in {
+            "none",
+            "llm",
+            "retrieval_interp",
+            "retrieval_collision_planner",
+        }:
+            raise ValueError(f"Unsupported transition_mode: {transition_mode}")
 
         def build_timing_stats():
             episode_total = time.perf_counter() - episode_start_wall
@@ -540,40 +596,121 @@ class Evaluator:
                     imageio.imwrite(side_path, current_side_view)
                 current_joint_pos = self.data.qpos[range(self.model.joint('/ur:shoulder_pan').qposadr.item(), self.model.joint('/ur:shoulder_pan').qposadr.item() + 6)]
                 np.save('logs/current_joint.npy', current_joint_pos)
+                try:
+                    from camera_calibration_enhancement import (
+                        build_transition_calibration_payload,
+                        write_calibration_assets,
+                    )
+
+                    calibration_payload = build_transition_calibration_payload(
+                        model=self.model,
+                        data=self.data,
+                        front_image=current_view,
+                        side_image=current_side_view,
+                    )
+                    calibration_assets = write_calibration_assets(
+                        calibration_payload,
+                        {"front": current_view, "side": current_side_view},
+                        output_dir=logs_dir,
+                    )
+                    annotated_paths = calibration_assets.get("annotated_image_paths", {})
+                    if annotated_paths.get("front"):
+                        front_path = pathlib.Path(annotated_paths["front"])
+                    if annotated_paths.get("side"):
+                        side_path = pathlib.Path(annotated_paths["side"])
+                except Exception as e:
+                    print(f"[Calibration] Failed to build transition calibration assets: {e}")
                 return front_path, side_path
 
             def execute_transition_to(target_prompt: str, timing_label: str):
                 nonlocal transition_infer_total, transition_total, transition_count
-                if not use_transition_generation:
-                    print(f"[Transition] Skipped transition generation to {timing_label} (disabled by flag).")
+                if effective_transition_mode == "none":
+                    print(f"[Transition] Skipped transition to {timing_label} (transition_mode=none).")
                     return
 
                 transition_start_wall = time.perf_counter()
-                from transition_generation import transition_code_generation, validate_qpos_interpolation_path
                 transition_infer_start_wall = time.perf_counter()
                 ur_joint_start = self.model.joint('/ur:shoulder_pan').qposadr.item()
                 ur_jnt_span = range(ur_joint_start, ur_joint_start + 6)
 
-                def qpos_path_validator(candidate_qpos, *, selected_index: int):
-                    return validate_qpos_interpolation_path(
-                        self.model,
-                        self.data,
-                        ur_jnt_span,
-                        candidate_qpos,
-                    )
+                if effective_transition_mode == "llm":
+                    from transition_generation import transition_code_generation, validate_qpos_interpolation_path
 
-                transition_code_generation(
-                    target_prompt,
-                    no_planning=no_planning,
-                    no_interpolation=no_interpolation,
-                    llm_config=llm_config,
-                    target_top_k=3,
-                    qpos_path_validator=qpos_path_validator,
+                    def qpos_path_validator(candidate_qpos, *, selected_index: int):
+                        return validate_qpos_interpolation_path(
+                            self.model,
+                            self.data,
+                            ur_jnt_span,
+                            candidate_qpos,
+                        )
+
+                    transition_code_generation(
+                        target_prompt,
+                        no_planning=no_planning,
+                        no_interpolation=no_interpolation,
+                        llm_config=llm_config,
+                        target_top_k=3,
+                        qpos_path_validator=qpos_path_validator,
+                    )
+                    transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
+                    transition_infer_total += transition_infer_elapsed
+
+                    from transition_template import TransitionExpert
+                    expert = TransitionExpert(self.model, self.data, self.task)
+                    original_step_and_log = self.task.step_and_log
+
+                    def step_and_log_with_capture(info: dict):
+                        original_step_and_log(info)
+                        self._capture_replay_frame()
+
+                    self.task.step_and_log = step_and_log_with_capture
+                    try:
+                        self._capture_replay_frame()
+                        expert.execute()
+                        self._capture_replay_frame()
+                    finally:
+                        self.task.step_and_log = original_step_and_log
+                else:
+                    from non_llm_transition import execute_non_llm_transition
+
+                    original_step_and_log = self.task.step_and_log
+
+                    def step_and_log_with_capture(info: dict):
+                        original_step_and_log(info)
+                        self._capture_replay_frame()
+
+                    self.task.step_and_log = step_and_log_with_capture
+                    try:
+                        self._capture_replay_frame()
+                        non_llm_result = execute_non_llm_transition(
+                            model=self.model,
+                            data=self.data,
+                            task=self.task,
+                            target_prompt=target_prompt,
+                            mode=effective_transition_mode,
+                            target_top_k=3,
+                        )
+                        self._capture_replay_frame()
+                    finally:
+                        self.task.step_and_log = original_step_and_log
+                    transition_infer_elapsed = float(
+                        non_llm_result.get(
+                            "planning_elapsed",
+                            time.perf_counter() - transition_infer_start_wall,
+                        )
+                    )
+                    transition_infer_total += transition_infer_elapsed
+                transition_elapsed = time.perf_counter() - transition_start_wall
+                transition_total += transition_elapsed
+                transition_count += 1
+                print(
+                    f"[Timing] transition to {timing_label} took {transition_elapsed:.3f}s "
+                    f"(inference {transition_infer_elapsed:.3f}s)"
                 )
-                transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
-                transition_infer_total += transition_infer_elapsed
-                from transition_template import TransitionExpert
-                expert = TransitionExpert(self.model, self.data, self.task)
+
+            def execute_retry_restore_to_initial(initial_state: dict, timing_label: str):
+                nonlocal transition_infer_total, transition_total, transition_count
+                transition_start_wall = time.perf_counter()
                 original_step_and_log = self.task.step_and_log
 
                 def step_and_log_with_capture(info: dict):
@@ -583,16 +720,23 @@ class Evaluator:
                 self.task.step_and_log = step_and_log_with_capture
                 try:
                     self._capture_replay_frame()
-                    expert.execute()
+                    restored_steps = restore_prompt_initial_state_direct(
+                        task=self.task,
+                        data=self.data,
+                        state_indices=self.task_info["state_indices"],
+                        action_indices=self.task_info["action_indices"],
+                        initial_state=initial_state,
+                    )
                     self._capture_replay_frame()
                 finally:
                     self.task.step_and_log = original_step_and_log
+
                 transition_elapsed = time.perf_counter() - transition_start_wall
                 transition_total += transition_elapsed
                 transition_count += 1
                 print(
-                    f"[Timing] transition to {timing_label} took {transition_elapsed:.3f}s "
-                    f"(inference {transition_infer_elapsed:.3f}s)"
+                    f"[Timing] retry restore to {timing_label} took {transition_elapsed:.3f}s "
+                    f"(inference 0.000s, steps {restored_steps})"
                 )
             
             # 多 prompt 逻辑
@@ -603,6 +747,11 @@ class Evaluator:
                 attempt_index = attempt_counts[prompt_index]
                 print(f"Executing prompt: {prompt} (attempt {attempt_index + 1})")
                 self.task_info['prefix'] = prompt
+                prompt_initial_state = capture_prompt_initial_state(
+                    self.data,
+                    self.task_info["state_indices"],
+                    self.task_info["action_indices"],
+                )
                 # task_nums = len(prompts)
                 healthy = run_prompt(prompt, time_limit)
                 
@@ -685,13 +834,11 @@ class Evaluator:
                     break
 
                 if target_prompt is not None:
-                    if use_task_judge and action == "retry" and not use_transition_generation:
-                        print("[TaskJudge] Retry requested but transition generation is disabled; failing episode.")
-                        all_success = False
-                        failed_prompt = prompt
-                        break
                     timing_label = "current prompt retry" if action == "retry" else "next prompt"
-                    execute_transition_to(target_prompt, timing_label)
+                    if use_task_judge and action == "retry":
+                        execute_retry_restore_to_initial(prompt_initial_state, timing_label)
+                    else:
+                        execute_transition_to(target_prompt, timing_label)
 
                 if action == "retry":
                     attempt_counts[prompt_index] += 1

@@ -1107,8 +1107,9 @@ _CONFIGS = [
         ),
         model=pi0_config.Pi0Config(pi05=True),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=60_000,
+        num_train_steps=50_000,
         wandb_enabled=False,
+        save_interval=10_000,
     ),
     TrainConfig(
         name="mani_centrifuge5910_pi05",
@@ -1119,8 +1120,9 @@ _CONFIGS = [
         ),
         model=pi0_config.Pi0Config(pi05=True),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=60_000,
+        num_train_steps=50_000,
         wandb_enabled=False,
+        save_interval=10_000,
     ),
     TrainConfig(
         name="mani_centrifuge5910_pi05-lora",
@@ -1131,12 +1133,13 @@ _CONFIGS = [
             assets=AssetsConfig(asset_id="mani_centrifuge5910"),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=60_000,
+        num_train_steps=50_000,
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
         wandb_enabled=False,
         ema_decay=None,
+        save_interval=10_000,
     ),
     TrainConfig(
         name="mani_thermalcycler_pi05-lora",
@@ -1147,12 +1150,13 @@ _CONFIGS = [
             assets=AssetsConfig(asset_id="mani_thermalcycler"),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=60_000,
+        num_train_steps=50_000,
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
         wandb_enabled=False,
         ema_decay=None,
+        save_interval=10_000,
     ),
 ]
 

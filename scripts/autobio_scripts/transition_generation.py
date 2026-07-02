@@ -13,6 +13,12 @@ from difflib import SequenceMatcher
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from camera_calibration_enhancement import (
+    estimate_obstacles_from_vlm_output,
+    format_calibration_for_llm,
+    format_spatial_context_for_llm,
+)
+
 
 class NoValidQposCandidateError(ValueError):
     def __init__(
@@ -25,6 +31,85 @@ class NoValidQposCandidateError(ValueError):
         super().__init__(message)
         self.fallback_qpos = fallback_qpos
         self.fallback_selection = fallback_selection
+
+
+_TRANSITION_EXPERT_SELF_ALLOWLIST = {
+    "act_id",
+    "act_name",
+    "act_span",
+    "action_indices",
+    "base_name",
+    "data",
+    "dof",
+    "dt",
+    "freq",
+    "get_site_pose",
+    "gripper_control",
+    "gripper_id",
+    "gripper_jnt_adr",
+    "ik",
+    "interpolate",
+    "jnt_adr",
+    "jnt_name",
+    "jnt_span",
+    "knob_site",
+    "lever_jntlimit",
+    "lever_joint",
+    "lever_qposadr",
+    "lever_site",
+    "lid_force_knob_joint",
+    "lid_force_knob_qposadr",
+    "lid_jntlimit",
+    "lid_joint",
+    "lid_lock",
+    "lid_qpos_min",
+    "lid_qposadr",
+    "model",
+    "move_to",
+    "move_to_target_qpos",
+    "path_follow",
+    "period",
+    "planner",
+    "rotate_gripper",
+    "site_id",
+    "site_name",
+    "state_indices",
+    "task",
+}
+
+
+def _self_attr_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+        return node.attr
+    return None
+
+
+def _find_unknown_self_attribute_loads(tree: ast.AST) -> list[tuple[str, int]]:
+    unknown: list[tuple[str, int]] = []
+    for class_node in [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]:
+        allowed = set(_TRANSITION_EXPERT_SELF_ALLOWLIST)
+        for node in class_node.body:
+            if isinstance(node, ast.FunctionDef):
+                allowed.add(node.name)
+        for node in ast.walk(class_node):
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.AugStore)):
+                attr_name = _self_attr_name(node)
+                if attr_name is not None:
+                    allowed.add(attr_name)
+
+        seen = set()
+        for node in ast.walk(class_node):
+            if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
+                continue
+            attr_name = _self_attr_name(node)
+            if attr_name is None or attr_name in allowed:
+                continue
+            key = (attr_name, getattr(node, "lineno", 0))
+            if key in seen:
+                continue
+            seen.add(key)
+            unknown.append(key)
+    return unknown
 
 
 def _sanitize_error_text(error: Exception, max_len: int = 500) -> str:
@@ -74,10 +159,57 @@ def file_to_data_url(
     b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
     return f"data:{mime};base64,{b64}"
 
+
+def _resolve_first_existing_path(paths: list | None, *, base_dir: Path) -> Path | None:
+    if not isinstance(paths, list):
+        return None
+    for value in paths:
+        if not value:
+            continue
+        path = Path(str(value))
+        if not path.is_absolute():
+            path = base_dir / path
+        if path.exists():
+            return path
+    return None
+
+
+def _load_calibration_prompt_text(path: str | Path = "logs/transition_calibration.json") -> str:
+    payload = _load_calibration_payload(path)
+    return format_calibration_for_llm(payload) if payload else ""
+
+
+def _load_calibration_payload(path: str | Path = "logs/transition_calibration.json") -> dict | None:
+    calibration_path = Path(path)
+    if not calibration_path.exists():
+        return None
+    try:
+        return json.loads(calibration_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[Calibration] Failed to read {calibration_path}: {e}")
+        return None
+
+
+def _write_json(path: str | Path, payload: dict) -> None:
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def validate_code(code):
     try:
         # 尝试解析代码
         tree = ast.parse(code)
+        unknown_self_attrs = _find_unknown_self_attribute_loads(tree)
+        if unknown_self_attrs:
+            details = ", ".join(
+                f"self.{attr} (line {line})" for attr, line in unknown_self_attrs[:5]
+            )
+            return (
+                False,
+                "Unknown self attribute in generated code: "
+                f"{details}. Use a local variable or an attribute initialized by TransitionExpert.",
+            )
         
         return True, "The code syntax is correct and the structure is complete."
         
@@ -592,6 +724,8 @@ def _replace_execute_body(
     final_target_qpos: list[float],
     final_target_gripper: float | None,
     include_final_restore: bool = True,
+    final_target_qpos_candidates: list | None = None,
+    target_top_k: int = 3,
 ) -> str:
     lines = template_code.splitlines()
     start = None
@@ -636,11 +770,30 @@ def _replace_execute_body(
     if include_final_restore:
         new_method.append("")
         new_method.append("        # Restore to target pose (hard-inserted from planning JSON).")
-        new_method.append(f"        target_qpos = {list(final_target_qpos)}")
-        if final_target_gripper is None:
-            new_method.append("        target_gripper = None")
+        if final_target_qpos_candidates:
+            candidate_literal = json.dumps(final_target_qpos_candidates, ensure_ascii=False)
+            new_method.append("        from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path")
+            new_method.append(f"        target_qpos_candidates = {candidate_literal}")
+            new_method.append("        target_selection = select_target_qpos_after_transition(")
+            new_method.append("            target_qpos_candidates,")
+            new_method.append("            self.data.qpos[self.jnt_span],")
+            new_method.append(f"            top_k={max(1, int(target_top_k or 3))},")
+            new_method.append("            path_validator=lambda candidate_qpos, *, selected_index: validate_qpos_interpolation_path(")
+            new_method.append("                self.model,")
+            new_method.append("                self.data,")
+            new_method.append("                self.jnt_span,")
+            new_method.append("                candidate_qpos,")
+            new_method.append("            ),")
+            new_method.append("        )")
+            new_method.append("        target_qpos_full = np.asarray(target_selection[\"selected_qpos\"], dtype=np.float64).reshape(-1)")
+            new_method.append("        target_qpos = target_qpos_full[:self.dof].tolist()")
+            new_method.append("        target_gripper = float(target_qpos_full[-1]) if target_qpos_full.size > self.dof else None")
         else:
-            new_method.append(f"        target_gripper = {float(final_target_gripper)}")
+            new_method.append(f"        target_qpos = {list(final_target_qpos)}")
+            if final_target_gripper is None:
+                new_method.append("        target_gripper = None")
+            else:
+                new_method.append(f"        target_gripper = {float(final_target_gripper)}")
         new_method.append("        self.move_to_target_qpos(target_qpos)")
         new_method.append("        self.gripper_control(target_gripper)")
     else:
@@ -827,6 +980,42 @@ def select_target_qpos_candidate(
     )
 
 
+def select_target_qpos_after_transition(
+    stacked_qpos: list,
+    current_joint_pos: np.ndarray,
+    *,
+    top_k: int = 3,
+    path_validator: Callable[..., bool | dict] | None = None,
+) -> dict:
+    try:
+        return select_target_qpos_candidate(
+            stacked_qpos,
+            current_joint_pos,
+            top_k=top_k,
+            path_validator=path_validator,
+        )
+    except NoValidQposCandidateError as e:
+        if e.fallback_selection is not None:
+            return e.fallback_selection
+        if e.fallback_qpos is not None:
+            fallback_qpos = np.asarray(e.fallback_qpos, dtype=np.float64).reshape(-1)
+            return {
+                "selected_index": 0,
+                "selected_qpos": fallback_qpos,
+                "selected_distance": _qpos_joint_distance(fallback_qpos, current_joint_pos),
+                "top_k": max(1, int(top_k or 3)),
+                "validation": {
+                    "index": 0,
+                    "distance": _qpos_joint_distance(fallback_qpos, current_joint_pos),
+                    "valid": False,
+                    "reason": "validation_failed_fallback",
+                },
+                "top_candidates": [],
+                "fallback_reason": "top_k_validation_exhausted",
+            }
+        raise
+
+
 def _is_no_valid_qpos_candidate_error(error: Exception) -> bool:
     return isinstance(error, NoValidQposCandidateError) or "No valid qpos candidate" in str(error)
 
@@ -958,6 +1147,35 @@ def _build_task_prompt_index(qpos_db: dict | list):
     return by_prompt
 
 
+def _candidate_qpos_from_selection(stacked_qpos: list, selection: dict) -> list[list[float]]:
+    candidates = []
+    for item in selection.get("top_candidates", []):
+        index = int(item["index"])
+        qpos = np.asarray(stacked_qpos[index], dtype=np.float64).reshape(-1)
+        candidates.append(qpos.tolist())
+    return candidates
+
+
+def _candidate_values_from_selection(stacked_values: list | None, selection: dict) -> list:
+    if not isinstance(stacked_values, list):
+        return []
+    candidates = []
+    for item in selection.get("top_candidates", []):
+        index = int(item["index"])
+        candidates.append(stacked_values[index] if index < len(stacked_values) else None)
+    return candidates
+
+
+def _stacked_front_image_paths(matched: dict) -> list:
+    paths = matched.get("initial_front_image_paths")
+    if isinstance(paths, list):
+        return paths
+    entries = matched.get("entries", [])
+    if isinstance(entries, list):
+        return [entry.get("initial_front_image_path") for entry in entries]
+    return []
+
+
 def _fallback_find_qpos(
     db: dict | list,
     task_prompt: str,
@@ -1027,6 +1245,7 @@ def retrieve_target_qpos_with_agent(
     path_validator: Callable[..., bool | dict] | None = None,
     local_retrieval_first: bool = False,
     local_retrieval_cutoff: float = 0.72,
+    return_selection: bool = False,
 ):
     qpos_db_path = Path("logs/lerobot_initial_qpos.json")
     if not qpos_db_path.exists():
@@ -1057,6 +1276,15 @@ def retrieve_target_qpos_with_agent(
                     path_validator=path_validator,
                     match_cutoff=local_retrieval_cutoff,
                 )
+                matched = by_prompt[matched_task_prompt]
+                stacked_qpos = matched.get("initial_qpos")
+                if not isinstance(stacked_qpos, list) or len(stacked_qpos) == 0:
+                    entries = matched.get("entries", [])
+                    stacked_qpos = [
+                        entry.get("initial_qpos")
+                        for entry in entries
+                        if entry.get("initial_qpos") is not None
+                    ]
                 requested_prompt = task_prompt
                 retrieval_source = "local_fuzzy"
                 print(
@@ -1079,6 +1307,11 @@ def retrieve_target_qpos_with_agent(
                         **selection,
                         "selected_qpos": np.asarray(selection["selected_qpos"], dtype=np.float64).reshape(-1).tolist(),
                     },
+                    "target_qpos_candidates": _candidate_qpos_from_selection(stacked_qpos, selection),
+                    "target_front_image_paths": _candidate_values_from_selection(
+                        _stacked_front_image_paths(matched),
+                        selection,
+                    ),
                 }
                 out_path = Path("logs/target_qpos_selected.json")
                 out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1086,6 +1319,8 @@ def retrieve_target_qpos_with_agent(
                     json.dump(selected_payload, f, ensure_ascii=False, indent=2)
 
                 print(f"Saved retrieved target qpos to: {out_path}")
+                if return_selection:
+                    return selected_qpos_arr, selected_payload
                 return selected_qpos_arr
             except NoValidQposCandidateError:
                 raise
@@ -1182,6 +1417,11 @@ Rules:
             path_validator=path_validator,
             match_cutoff=0.5,
         )
+        matched = by_prompt[matched_task_prompt]
+        stacked_qpos = matched.get("initial_qpos")
+        if not isinstance(stacked_qpos, list) or len(stacked_qpos) == 0:
+            entries = matched.get("entries", [])
+            stacked_qpos = [entry.get("initial_qpos") for entry in entries if entry.get("initial_qpos") is not None]
         retrieval_source = "local_fallback"
 
     selected_qpos_arr = np.asarray(selected_qpos, dtype=np.float64).reshape(-1)
@@ -1200,6 +1440,11 @@ Rules:
             **selection,
             "selected_qpos": np.asarray(selection["selected_qpos"], dtype=np.float64).reshape(-1).tolist(),
         },
+        "target_qpos_candidates": _candidate_qpos_from_selection(stacked_qpos, selection),
+        "target_front_image_paths": _candidate_values_from_selection(
+            _stacked_front_image_paths(matched),
+            selection,
+        ),
     }
     out_path = Path("logs/target_qpos_selected.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1207,6 +1452,8 @@ Rules:
         json.dump(selected_payload, f, ensure_ascii=False, indent=2)
 
     print(f"Saved retrieved target qpos to: {out_path}")
+    if return_selection:
+        return selected_qpos_arr, selected_payload
     return selected_qpos_arr
 
 def transition_code_generation(
@@ -1309,15 +1556,18 @@ def transition_code_generation(
             backend_mode=effective_backend_mode,
             thinking_mode=thinking_mode,
             top_k=target_top_k,
-            path_validator=qpos_path_validator,
+            path_validator=None,
             local_retrieval_first=local_retrieval_first,
             local_retrieval_cutoff=local_retrieval_cutoff or 0.72,
+            return_selection=True,
         )
 
-    target_joint_pos_arr = _retrieve_target_qpos_with_retry(
+    target_joint_pos_arr, target_retrieval_payload = _retrieve_target_qpos_with_retry(
         retrieve_once,
         max_transition_regeneration_attempts=max_transition_regeneration_attempts,
     )
+    target_qpos_candidates = target_retrieval_payload.get("target_qpos_candidates", [])
+    target_front_image_paths = target_retrieval_payload.get("target_front_image_paths", [])
     target_joint_pos = str(target_joint_pos_arr.tolist())
     target_arm_qpos = target_joint_pos_arr[:6].tolist()
     target_gripper_state = float(target_joint_pos_arr[-1]) if target_joint_pos_arr.size > 6 else None
@@ -1326,17 +1576,103 @@ def transition_code_generation(
     allowed_apis = _collect_execute_allowed_apis(template_code)
     front_image_data_url = None
     side_image_data_url = None
+    target_front_image_data_url = None
+    calibration_payload = _load_calibration_payload()
+    calibration_prompt_text = format_calibration_for_llm(calibration_payload) if calibration_payload else ""
+    spatial_context_prompt_text = ""
     if not no_planning:
+        front_image_path = _resolve_first_existing_path(
+            ["current_front_calibrated.png", "current_view.png"],
+            base_dir=Path("logs"),
+        ) or Path("logs/current_view.png")
+        side_image_path = _resolve_first_existing_path(
+            ["current_side_calibrated.png", "current_side_view.png"],
+            base_dir=Path("logs"),
+        ) or Path("logs/current_side_view.png")
         front_image_data_url = file_to_data_url(
-            'logs/current_view.png',
+            str(front_image_path),
             max_image_side=image_max_side,
             image_quality=image_quality or 80,
         )
         side_image_data_url = file_to_data_url(
-            'logs/current_side_view.png',
+            str(side_image_path),
             max_image_side=image_max_side,
             image_quality=image_quality or 80,
         )
+        target_front_image_path = _resolve_first_existing_path(
+            target_front_image_paths,
+            base_dir=Path("logs"),
+        )
+        if target_front_image_path is not None:
+            target_front_image_data_url = file_to_data_url(
+                str(target_front_image_path),
+                max_image_side=image_max_side,
+                image_quality=image_quality or 80,
+            )
+
+        if calibration_payload is not None:
+            obstacle_prompt = f"""
+You are a visual obstacle perception tool for robot transition planning.
+
+Task prompt:
+{task_prompt}
+
+Use the calibrated front and side images to identify physical objects that may obstruct the gripper when moving from the current task state toward the next task state.
+
+Return strictly one JSON object:
+{{
+  "obstacles": [
+    {{
+      "name": "short object name",
+      "front_bbox": [x1, y1, x2, y2],
+      "side_bbox": [x1, y1, x2, y2],
+      "confidence": 0.0,
+      "risk_reason": "why this object may block the gripper"
+    }}
+  ]
+}}
+
+Rules:
+1. Use pixel coordinates in the provided images.
+2. Include only physical objects that could affect the robot gripper path.
+3. Do not include robot links, background, image labels, or text overlays as obstacles.
+4. If no obstacle is visible, return {{"obstacles": []}}.
+5. Do not output markdown or extra text.
+""".strip()
+            try:
+                obstacle_vlm_output = _request_json_object(
+                    client=client,
+                    model_name=model_name,
+                    request_input=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": obstacle_prompt},
+                            {"type": "input_image", "image_url": front_image_data_url},
+                            {"type": "input_image", "image_url": side_image_data_url},
+                        ],
+                    }],
+                    stage_name="stage-0-obstacle-perception",
+                    max_attempts=max_attempts,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    backend_mode=effective_backend_mode,
+                    thinking_mode=thinking_mode,
+                )
+                _write_json("logs/transition_obstacles_vlm.json", obstacle_vlm_output)
+                current_gripper_position = (calibration_payload.get("end_effector") or {}).get("position_world")
+                target_gripper_position = (calibration_payload.get("target_end_effector") or {}).get("position_world")
+                spatial_context = estimate_obstacles_from_vlm_output(
+                    obstacle_vlm_output,
+                    calibration_payload,
+                    current_gripper_position=current_gripper_position,
+                    target_gripper_position=target_gripper_position,
+                )
+                _write_json("logs/transition_spatial_context.json", spatial_context)
+                spatial_context_prompt_text = format_spatial_context_for_llm(spatial_context)
+            except Exception as e:
+                print(f"[Calibration] stage-0 obstacle perception failed: {_sanitize_error_text(e)}")
 
     planning_prompt = f'''
 You are a robot transition planner.
@@ -1347,6 +1683,7 @@ Generate a concise path-planning list for transition execution, not code.
 Inputs:
 front camera image: front-to-back is x-axis, left-to-right is y-axis, and up-and-down is z-axis.
 left camera image: use this as complementary geometric evidence for occlusions, depth relation, and side clearance.
+target front reference image: the target task's retrieved initial front-view image, aligned with the retrieved target state candidates.
 
 Planning objective:
 - Safety-first, collision-avoidance.
@@ -1358,9 +1695,16 @@ Next, a determination is made as to whether the gripper requires releasing. (mos
 Subsequently, the End-Effector (EE) is maneuvered away from all obstacles visible from any viewpoint through a combination of translational and rotational movements. 
 
 Image binding for this request:
-- The first image is the FRONT view.
-- The second image is the LEFT view.
-- You must jointly reason over both images before generating the plan.
+- The first image is the CURRENT FRONT view.
+- The second image is the CURRENT LEFT view.
+- The third image, when present, is the TARGET INITIAL FRONT reference view.
+- You must jointly reason over the current views and target reference before generating the plan.
+
+Calibrated camera geometry:
+{calibration_prompt_text if calibration_prompt_text else "No calibrated camera geometry is available for this transition."}
+
+Tool-derived spatial context:
+{spatial_context_prompt_text if spatial_context_prompt_text else "No VLM+calibration obstacle context is available for this transition."}
 
 Return strictly one JSON object with schema:
 {{
@@ -1431,6 +1775,7 @@ Output rules:
 2. Do not include markdown fences.
 3. Do not include this line (it will be inserted automatically): self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 4. Do not generate final target restoration lines (`target_qpos`, `target_gripper`, `move_to_target_qpos`). They are inserted by host code.
+5. Do not invent persistent attributes such as `self.target_quat` or `self.target_pose`. Store intermediate values in local variables, for example `target_quat = self.rotate_gripper(...)`.
 '''
     
     print("Next task prompt:", task_prompt)
@@ -1445,6 +1790,8 @@ Output rules:
             final_target_qpos=target_arm_qpos,
             final_target_gripper=target_gripper_state,
             include_final_restore=(not no_interpolation),
+            final_target_qpos_candidates=target_qpos_candidates,
+            target_top_k=target_top_k,
         )
         is_valid, validation_msg = validate_code(code)
         if is_valid:
@@ -1455,16 +1802,19 @@ Output rules:
         raise ValueError(f"Generated template code is invalid in no_planning mode: {validation_msg}")
 
     print(f"🚀 Stage 1: Generating path planning list using {model_name}...")
+    planning_content = [
+        {"type": "input_text", "text": planning_prompt},
+        {"type": "input_image", "image_url": front_image_data_url},
+        {"type": "input_image", "image_url": side_image_data_url},
+    ]
+    if target_front_image_data_url is not None:
+        planning_content.append({"type": "input_image", "image_url": target_front_image_data_url})
     plan_obj = _request_json_object(
         client=client,
         model_name=model_name,
         request_input=[{
             "role": "user",
-            "content": [
-                {"type": "input_text", "text": planning_prompt},
-                {"type": "input_image", "image_url": front_image_data_url},
-                {"type": "input_image", "image_url": side_image_data_url},
-            ],
+            "content": planning_content,
         }],
         stage_name="stage-1-planning",
         max_attempts=max_attempts,
@@ -1531,6 +1881,8 @@ Output rules:
         final_target_qpos=plan_target_qpos,
         final_target_gripper=plan_target_gripper,
         include_final_restore=(not no_interpolation),
+        final_target_qpos_candidates=target_qpos_candidates,
+        target_top_k=target_top_k,
     )
 
     is_valid, validation_msg = validate_code(code)

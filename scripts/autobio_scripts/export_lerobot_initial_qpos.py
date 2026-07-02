@@ -1,8 +1,10 @@
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
+import imageio.v2 as imageio
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
@@ -40,6 +42,58 @@ def _extract_state(sample: dict[str, Any]) -> list[float]:
     return np.asarray(sample["state"], dtype=np.float64).reshape(-1).tolist()
 
 
+def _extract_front_image(sample: dict[str, Any], front_image_key: str) -> Any | None:
+    for key in (front_image_key, "observation/image", "image"):
+        if key in sample and sample[key] is not None:
+            return sample[key]
+    return None
+
+
+def _as_uint8_image(image: Any) -> np.ndarray:
+    if hasattr(image, "detach") and hasattr(image, "cpu"):
+        image = image.detach().cpu().numpy()
+    arr = np.asarray(image)
+    if arr.ndim == 2:
+        arr = arr[..., None]
+    if arr.ndim == 3 and arr.shape[0] in (1, 3, 4) and arr.shape[-1] not in (1, 3, 4):
+        arr = np.moveaxis(arr, 0, -1)
+    if arr.ndim != 3 or arr.shape[-1] not in (1, 3, 4):
+        raise ValueError(f"Unsupported front image shape: {arr.shape}")
+    if np.issubdtype(arr.dtype, np.floating):
+        max_value = float(np.nanmax(arr)) if arr.size else 0.0
+        if max_value <= 1.0:
+            arr = arr * 255.0
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def _safe_path_part(text: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", text.strip()).strip("_")
+    return safe[:80] or "task"
+
+
+def _write_front_image(
+    image: Any | None,
+    *,
+    output_path: Path,
+    image_output_dir: Path,
+    prompt: str,
+    episode_index: int | None,
+    sample_index: int,
+) -> str | None:
+    if image is None:
+        return None
+
+    image_dir = image_output_dir / _safe_path_part(prompt)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    episode_part = episode_index if episode_index is not None else sample_index
+    image_path = image_dir / f"episode_{episode_part}_front.png"
+    imageio.imwrite(image_path, _as_uint8_image(image))
+    try:
+        return str(image_path.relative_to(output_path.parent))
+    except ValueError:
+        return str(image_path)
+
+
 def _to_int_list(value: Any) -> list[int]:
     if value is None:
         return []
@@ -72,9 +126,16 @@ def _get_episode_start_indices(dataset: LeRobotDataset) -> list[int] | None:
     return None
 
 
-def export_initial_qpos(repo_id: str, output_path: Path):
+def export_initial_qpos(
+    repo_id: str,
+    output_path: Path,
+    *,
+    image_output_dir: Path | None = None,
+    front_image_key: str = "observation/image",
+):
     dataset_meta = LeRobotDatasetMetadata(repo_id)
     dataset = LeRobotDataset(repo_id)
+    image_output_dir = image_output_dir or (output_path.parent / "lerobot_initial_images")
 
     tasks_map = {int(k): str(v) for k, v in dataset_meta.tasks.items()}
 
@@ -105,11 +166,20 @@ def export_initial_qpos(repo_id: str, output_path: Path):
 
         prompt = _extract_prompt(sample, tasks_map)
         qpos = _extract_state(sample)
+        front_image_path = _write_front_image(
+            _extract_front_image(sample, front_image_key),
+            output_path=output_path,
+            image_output_dir=image_output_dir,
+            prompt=prompt,
+            episode_index=episode_index,
+            sample_index=int(i),
+        )
 
         task_to_entries.setdefault(prompt, []).append(
             {
                 "episode_index": episode_index,
                 "initial_qpos": qpos,
+                "initial_front_image_path": front_image_path,
             }
         )
 
@@ -119,10 +189,12 @@ def export_initial_qpos(repo_id: str, output_path: Path):
     tasks = []
     for prompt, entries in sorted(task_to_entries.items(), key=lambda x: x[0]):
         stacked_qpos = [entry["initial_qpos"] for entry in entries]
+        stacked_front_image_paths = [entry.get("initial_front_image_path") for entry in entries]
         tasks.append(
             {
                 "task": prompt,
                 "initial_qpos": stacked_qpos,
+                "initial_front_image_paths": stacked_front_image_paths,
             }
         )
 
@@ -147,9 +219,26 @@ def parse_args() -> argparse.Namespace:
         default=Path("logs/lerobot_initial_qpos.json"),
         help="Output JSON path",
     )
+    parser.add_argument(
+        "--image-output-dir",
+        type=Path,
+        default=None,
+        help="Directory for exported initial front-view PNGs. Defaults to <output parent>/lerobot_initial_images",
+    )
+    parser.add_argument(
+        "--front-image-key",
+        type=str,
+        default="observation/image",
+        help="Dataset sample key containing the front-view image",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    export_initial_qpos(args.repo_id, args.output)
+    export_initial_qpos(
+        args.repo_id,
+        args.output,
+        image_output_dir=args.image_output_dir,
+        front_image_key=args.front_image_key,
+    )

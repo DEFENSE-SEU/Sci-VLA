@@ -12,6 +12,7 @@ from transition_generation import (
     _request_json_object,
     file_to_data_url,
 )
+from camera_calibration_enhancement import format_calibration_for_llm
 
 
 PROMPT_ACTIONS = {"advance", "retry", "fail_episode"}
@@ -114,7 +115,18 @@ def append_judgement_log(record: dict, log_path: str | Path = "logs/task_judgeme
         f.write(json.dumps(out, ensure_ascii=False, default=str) + "\n")
 
 
-def _build_judge_prompt(prompt: str) -> str:
+def _load_calibration_prompt_text(path: str | Path = "logs/transition_calibration.json") -> str:
+    calibration_path = Path(path)
+    if not calibration_path.exists():
+        return ""
+    try:
+        payload = json.loads(calibration_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return format_calibration_for_llm(payload)
+
+
+def _build_judge_prompt(prompt: str, calibration_text: str = "") -> str:
     return f"""
 You are a strict visual task-success judge for a robot laboratory manipulation task.
 
@@ -123,6 +135,9 @@ Task prompt:
 
 Use the two end-state images to decide whether this prompt has been successfully completed.
 Judge only the current prompt, not the whole long-horizon task.
+
+Calibrated camera geometry:
+{calibration_text if calibration_text else "No calibrated camera geometry is available for this judgement."}
 
 Return strictly one JSON object with this exact schema:
 {{
@@ -187,7 +202,7 @@ def judge_task_success(
         {
             "role": "user",
             "content": [
-                {"type": "input_text", "text": _build_judge_prompt(prompt)},
+                {"type": "input_text", "text": _build_judge_prompt(prompt, _load_calibration_prompt_text())},
                 {"type": "input_image", "image_url": file_to_data_url(str(front_image_path))},
                 {"type": "input_image", "image_url": file_to_data_url(str(side_image_path))},
             ],

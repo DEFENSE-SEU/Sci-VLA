@@ -121,6 +121,7 @@ def evaluate_task(
     time_limit: float,
     prompts: list[str] | None = None,
     use_transition_generation: bool = True,
+    transition_mode: str = "auto",
     no_planning: bool = False,
     no_interpolation: bool = False,
     control_fps: float = 50.0,
@@ -137,6 +138,7 @@ def evaluate_task(
         time_limit,
         prompts=prompts,
         use_transition_generation=use_transition_generation,
+        transition_mode=transition_mode,
         no_planning=no_planning,
         no_interpolation=no_interpolation,
         control_fps=control_fps,
@@ -196,6 +198,7 @@ _policy: "Policy"
 _prompts: list[str] | None = None
 _time_limit: float
 _use_transition_generation: bool
+_transition_mode: str
 _no_planning: bool
 _no_interpolation: bool
 _control_fps: float
@@ -248,6 +251,7 @@ def init_worker(
     time_limit: float,
     video_fps: int,
     use_transition_generation: bool,
+    transition_mode: str,
     no_planning: bool,
     no_interpolation: bool,
     control_fps: float,
@@ -267,13 +271,14 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _no_planning, _no_interpolation, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _transition_mode, _no_planning, _no_interpolation, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
     _policy = make_policy(host, port, policy_backend)
     _prompts = prompts
     _time_limit = time_limit
     _use_transition_generation = use_transition_generation
+    _transition_mode = transition_mode
     _no_planning = no_planning
     _no_interpolation = no_interpolation
     _control_fps = control_fps
@@ -291,6 +296,7 @@ def step_worker(seed: int):
         _time_limit,
         _prompts,
         _use_transition_generation,
+        _transition_mode,
         _no_planning,
         _no_interpolation,
         _control_fps,
@@ -342,6 +348,16 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Whether to run transition generation and execution between prompts",
+    )
+    parser.add_argument(
+        "--transition-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "none", "llm", "retrieval_interp", "retrieval_collision_planner"],
+        help=(
+            "Transition executor between prompts. auto preserves --use-transition-generation "
+            "behavior; llm uses Sci transition generation; retrieval_* modes use non-LLM baselines."
+        ),
     )
     parser.add_argument(
         "--no_planning",
@@ -456,6 +472,7 @@ if __name__ == "__main__":
                 time_limit,
                 prompts,
                 args.use_transition_generation,
+                args.transition_mode,
                 args.no_planning,
                 args.no_interpolation,
                 args.control_fps,
@@ -492,6 +509,7 @@ if __name__ == "__main__":
                 time_limit,
                 args.video_fps,
                 args.use_transition_generation,
+                args.transition_mode,
                 args.no_planning,
                 args.no_interpolation,
                 args.control_fps,

@@ -115,36 +115,36 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        # step 1: open gripper to ensure release of any held objects
         self.gripper_control(0)
 
-        # step 2: move EE 15cm along +z axis to lift above the white box surface
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.15), quat=cur_pose.quat)
-        path = self.interpolate(cur_pose, end_pose, 100)
-        self.path_follow(path)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
+        self.move_to(end_pose, num_steps=100)
 
-        # step 3: move EE 10cm along +y axis to move away from the box edge towards the base
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.1, 0.0), quat=cur_pose.quat)
-        path = self.interpolate(cur_pose, end_pose, 100)
-        self.path_follow(path)
+        end_pose = Pose(pos=cur_pose.pos + (-0.1, 0.0, 0.0), quat=cur_pose.quat)
+        self.move_to(end_pose, num_steps=100)
 
-        # step 4: move EE 10cm along +x axis to clear the front area of the workspace
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.1, 0.0, 0.0), quat=cur_pose.quat)
-        path = self.interpolate(cur_pose, end_pose, 100)
-        self.path_follow(path)
-
-        # step 5: rotate EE slightly around z-axis to align with safe transit orientation
-        cur_pose = self.get_site_pose(self.data)
-        target_quat = self.rotate_gripper(15, 'z', cur_pose.quat)
-        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
-        path = self.interpolate(cur_pose, end_pose, 100)
-        self.path_follow(path)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.05, 0.0), quat=cur_pose.quat)
+        self.move_to(end_pose, num_steps=100)
 
         # Restore to target pose (hard-inserted from planning JSON).
-        target_qpos = [-0.0005398354260250926, -1.5365874767303467, 1.4463473558425903, -1.5759835243225098, -1.4576054811477661, -1.4714851379394531]
-        target_gripper = 0.0
+        from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path
+        target_qpos_candidates = [[-1.159494400024414, -1.6729785203933716, 1.640017032623291, -1.7828185558319092, -1.5182338953018188, -1.6544227600097656, 0.0], [-1.1447508335113525, -1.696751594543457, 1.5192636251449585, -1.6308640241622925, -1.3747559785842896, -1.718564748764038, 0.0], [-1.1790117025375366, -1.5924853086471558, 1.5277721881866455, -1.8615165948867798, -1.4539862871170044, -1.6410117149353027, 0.0]]
+        target_selection = select_target_qpos_after_transition(
+            target_qpos_candidates,
+            self.data.qpos[self.jnt_span],
+            top_k=3,
+            path_validator=lambda candidate_qpos, *, selected_index: validate_qpos_interpolation_path(
+                self.model,
+                self.data,
+                self.jnt_span,
+                candidate_qpos,
+            ),
+        )
+        target_qpos_full = np.asarray(target_selection["selected_qpos"], dtype=np.float64).reshape(-1)
+        target_qpos = target_qpos_full[:self.dof].tolist()
+        target_gripper = float(target_qpos_full[-1]) if target_qpos_full.size > self.dof else None
         self.move_to_target_qpos(target_qpos)
         self.gripper_control(target_gripper)
