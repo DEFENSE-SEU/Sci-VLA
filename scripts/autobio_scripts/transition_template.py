@@ -115,23 +115,37 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
+        # Step 1: Open gripper to ensure it is free from any objects.
         self.gripper_control(0)
 
+        # Step 2: Move End-Effector 20cm along +z axis to lift clear of the open tray lid.
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
-        self.move_to(end_pose, num_steps=100)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.2), quat=cur_pose.quat)
+        self.move_to(end_pose)
 
+        # Step 3: Move End-Effector 15cm along -y axis to shift laterally away from the tray center.
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (-0.1, 0.0, 0.0), quat=cur_pose.quat)
-        self.move_to(end_pose, num_steps=100)
+        end_pose = Pose(pos=cur_pose.pos + (0.0, -0.15, 0.0), quat=cur_pose.quat)
+        self.move_to(end_pose)
 
+        # Step 4: Move End-Effector 10cm along +x axis to back away from the scene.
         cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.05, 0.0), quat=cur_pose.quat)
-        self.move_to(end_pose, num_steps=100)
+        end_pose = Pose(pos=cur_pose.pos + (0.1, 0.0, 0.0), quat=cur_pose.quat)
+        self.move_to(end_pose)
+
+        # Step 5: Adjust orientation to match final target qpos.
+        cur_pose = self.get_site_pose(self.data)
+        # Using a neutral rotation adjustment logic as specific target values are injected by host code later
+        target_quat = self.rotate_gripper(0, 'z', cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
+        self.move_to(end_pose)
+
+        # Step 6: Close gripper (if needed for final pose, otherwise keep open).
+        self.gripper_control(250)
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path
-        target_qpos_candidates = [[-1.159494400024414, -1.6729785203933716, 1.640017032623291, -1.7828185558319092, -1.5182338953018188, -1.6544227600097656, 0.0], [-1.1447508335113525, -1.696751594543457, 1.5192636251449585, -1.6308640241622925, -1.3747559785842896, -1.718564748764038, 0.0], [-1.1790117025375366, -1.5924853086471558, 1.5277721881866455, -1.8615165948867798, -1.4539862871170044, -1.6410117149353027, 0.0]]
+        target_qpos_candidates = [[0.030478741973638535, -1.4459112882614136, 1.4453428983688354, -1.5643033981323242, -1.3350318670272827, -1.4915413856506348, 0.0], [-0.12320099771022797, -1.5524479150772095, 1.3857125043869019, -1.8300597667694092, -1.398608684539795, -1.539533257484436, 0.0], [0.09022454172372818, -1.5675280094146729, 1.797960877418518, -1.7616958618164062, -1.3594601154327393, -1.5207726955413818, 0.0]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],

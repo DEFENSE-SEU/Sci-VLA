@@ -373,6 +373,11 @@ class Centrifuge5910Manipulate(Task):
         mujoco.mj_forward(self.model, self.data)
         self.instrument.update(self.data)
 
+    def _apply_arm_qpos_perturbation(self):
+        perturbation = self.arm.qpos_perturb()
+        self.data.qpos[self.arm.jnt_span] += perturbation
+        self.data.ctrl[self.arm.act_span] += perturbation
+
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
@@ -391,8 +396,7 @@ class Centrifuge5910Manipulate(Task):
                 lid_qpos = self.instrument.lid_qpos_max
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 prefix = ''
@@ -412,8 +416,7 @@ class Centrifuge5910Manipulate(Task):
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.03  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 prefix = ''
@@ -443,8 +446,7 @@ class Centrifuge5910Manipulate(Task):
                 lid_qpos = self.instrument.lid_qpos_max
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 prefix='open the lid of the centrifuge5910'
@@ -471,8 +473,7 @@ class Centrifuge5910Manipulate(Task):
                     self.tube2_start_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
                     self.data.qpos[self.tube2.pos_span] = self.tube2_start_pos
 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 prefix='close the lid of the centrifuge5910'
@@ -490,8 +491,7 @@ class Centrifuge5910Manipulate(Task):
                 self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
 
                 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 # 设置目标放置位置（在桌子上）
@@ -514,8 +514,7 @@ class Centrifuge5910Manipulate(Task):
                 end_col=2
                 self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 # 设置目标放置位置（在桌子上）
@@ -539,8 +538,7 @@ class Centrifuge5910Manipulate(Task):
                 slot_id=0
                 self.tube_end_pos  = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
                 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 prefix='pick the experimental centrifuge tube from rack and place it into the centrifuge5910'
@@ -555,8 +553,7 @@ class Centrifuge5910Manipulate(Task):
                 slot_id=1
                 self.tube2_end_pos  = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
 
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 # 确保物理正确
                 self._forward_and_update_instrument()
                 prefix='pick the balance centrifuge tube from rack and place it into the centrifuge5910'
@@ -577,8 +574,7 @@ class Centrifuge5910Manipulate(Task):
                 lid_qpos = self.instrument.lid_jntlimit[1] - 0.005  # 接近完全关闭的位置
                 self.data.qpos[self.instrument.lid_qposadr] = lid_qpos
                 # 随机扰动机械臂位置
-                self.data.qpos[self.arm.jnt_span] += self.arm.qpos_perturb()
-                self.data.ctrl[self.arm.act_span] += self.arm.qpos_perturb()
+                self._apply_arm_qpos_perturbation()
                 self._forward_and_update_instrument()
                 prefix='press the screen button of the centrifuge5910'
             case _:
