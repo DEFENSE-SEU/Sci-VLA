@@ -169,10 +169,10 @@ class Centrifuge_Eppendorf_5910(System):
         self.lid_qposadr = model.jnt_qposadr[self.lid_joint].item()
         self.lid_jntlimit = model.jnt_range[self.lid_joint]
         self.lid_opener = self.name2id(mujoco.mjtObj.mjOBJ_ACTUATOR, 'lid_opener')
-        self.lid_pop_angle = np.deg2rad(22.0)
+        self.lid_pop_angle = np.deg2rad(27.0)
         # The lid spring settles a few degrees short of the actuator target.
-        # Command 26 deg so the visible pop reaches approximately 20 deg.
-        self.lid_pop_target_angle = np.deg2rad(26.0)
+        # Command 31 deg so the visible pop reaches approximately 25 deg.
+        self.lid_pop_target_angle = np.deg2rad(31.0)
         self.lid_pop_qpos = max(self.lid_jntlimit[0].item(), self.lid_qpos_max - self.lid_pop_angle)
         self.lid_pop_target_qpos = max(self.lid_jntlimit[0].item(), self.lid_qpos_max - self.lid_pop_target_angle)
         self.lid_hold_qpos = self.lid_pop_qpos

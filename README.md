@@ -27,8 +27,6 @@ Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simula
 
 ## Installation (editable local install)
 
-If you already have both openpi and autobio environments, skip this section.
-
 ```bash
 conda create -n scivla python=3.11
 conda activate scivla
@@ -36,7 +34,7 @@ conda install ffmpeg=7.1.1 -c conda-forge
 cd third_party/openpi
 pip install uv
 uv pip install -e .
-uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai pytest chex
+uv pip install 'mujoco==3.3.0' numpy scipy toppra trimesh shapely triangle manifold3d sympy zstandard tqdm networkx usd-core ffmpeg imageio[ffmpeg] matplotlib scikit-image openai 
 ```
 
 For LABVLA comparison experiments, create the LABVLA environment separately:
@@ -91,8 +89,8 @@ When you need to finetune a new specific task, add config in `third_party/openpi
 
 ```bash
 cd third_party/openpi
-python scripts/compute_norm_stats.py --config-name mani_centrifuge5910_pi05
-XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py mani_centrifuge5910_pi05 --exp-name mani_centrifuge5910_pi05_finetune
+python scripts/compute_norm_stats.py --config-name mani_thermalcycler_pi05
+XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py mani_thermalcycler_pi05 --exp-name mani_thermalcycler_pi05_finetune
 ```
 
 ### LABVLA fine-tuning
@@ -133,7 +131,7 @@ data root, repo id, schema, and stats settings from the launcher.
 ### Extract initial qpos json file from lerobot dataset
 
 ```bash
-python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_centrifuge5910 
+python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
 ```
 
 ### Convert jax model to pytorch model
@@ -141,14 +139,14 @@ If you want to use pytorch model to evaluate tasks, converting the jax checkpoin
 
 ```bash
 cp -r src/openpi/models_pytorch/transformers_replace/* ~/anaconda3/envs/scivla/lib/python3.11/site-packages/transformers
-python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/mani_centrifuge5910_pi05/ --config_name mani_centrifuge5910_pi05 --output_path checkpoints/mani_centrifuge5910_pi05_pytorch
+python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/mani_thermalcycler_pi05/ --config_name mani_thermalcycler_pi05 --output_path checkpoints/mani_thermalcycler_pi05_pytorch
 ```
 
 ### Evaluate the policy model on simulations
 To evaluate the policy model, open a shell and run:
 
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_centrifuge5910_pi05' --policy.dir 'checkpoints/mani_centrifuge5910_pi05/mani_centrifuge5910_pi05_finetune/60000/'
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_thermalcycler_pi05' --policy.dir 'checkpoints/mani_thermalcycler_pi05/mani_thermalcycler_pi05_finetune/49999/'
 ```
 
 then open another shell and run evaluation:
@@ -158,10 +156,35 @@ export BASE_URL="https://openrouter.ai/api/v1"
 export MODEL_NAME="qwen/qwen3.5-35b-a3b"
 export API_KEY="..."
 
-# example usage
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --use-transition-generation
+python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" --experiment-mode full
+```
 
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" --use-transition-generation
+Add `--no-render-video` to skip replay video capture and mp4 writing while still running evaluation and counting success.
+
+<!-- python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode full
+
+python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --time_limit 30 --prompts "press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910," --experiment-mode full -->
+
+### Experiment modes
+
+`evaluate.py` uses `--experiment-mode` to select the transition strategy between prompts:
+
+| Mode | Transition behavior |
+| --- | --- |
+| `no-transition` | Disable transitions between prompts. This is the default mode. |
+| `baseline` | Randomly sample an initial pose from the next task's dataset, then use collision-aware interpolation to restore to that pose. |
+| `no-retrieval` | Do not provide a target pose. Run the planning/coding agents only, and do not append final target-pose restoration. |
+| `no-agent` | Retrieve the target pose, skip planning/coding agents, and directly interpolate to the retrieved pose. |
+| `full` | Full Sci-VLA transition pipeline: retrieval, planning agent, coding/primitive execution, and final target-pose restoration. |
+
+For example:
+
+```bash
+python ./scripts/autobio_scripts/evaluate.py \
+  --task 'thermal_cycler_long_task_1' \
+  --time_limit 30 \
+  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler"  \
+  --experiment-mode baseline
 ```
 
 ### Evaluate LABVLA on simulations
@@ -174,7 +197,7 @@ python deployment/serve_labvla.py \
   --pretrained_path /path/to/labvla/checkpoint \
   --port 8000 \
   --device cuda \
-  --training_repo_id mani_centrifuge5910
+  --training_repo_id mani_thermalcycler
 ```
 
 Then run Sci-VLA evaluation with the LABVLA observation adapter:
@@ -184,16 +207,17 @@ python ./scripts/autobio_scripts/evaluate.py \
   --policy-backend labvla \
   --host 127.0.0.1 \
   --port 8000 \
-  --task 'centrifuge5910_long_task_1' \
+  --task 'thermal_cycler_long_task_1' \
   --time_limit 30 \
-  --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910"
+  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
+  --experiment-mode no-transition
 ```
 
 ### Evaluate the model using local VLM model (Qwen3.5)
 
 Establish the policy model:
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_centrifuge5910_pi05' --policy.dir 'checkpoints/mani_centrifuge5910_pi05/mani_centrifuge5910_pi05_finetune/100000/'
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_thermalcycler_pi05' --policy.dir 'checkpoints/mani_thermalcycler_pi05/mani_thermalcycler_pi05_finetune/49999/'
 ```
 
 ```bash
@@ -211,7 +235,7 @@ then open another shell window and run:
 python ./scripts/autobio_scripts/evaluate.py \
   --task "thermal_cycler_long_task_1" \
   --time_limit 30 \
-  --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" \
+  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
   --llm-base-url http://127.0.0.1:9000/v1 \
   --llm-model-name qwen3.5-9b \
   --llm-api-key EMPTY \
@@ -220,6 +244,7 @@ python ./scripts/autobio_scripts/evaluate.py \
   --llm-max-tokens 4096 \
   --llm-max-attempts 3 \
   --llm-timeout 120 \
+  --experiment-mode full
 ```
 
 

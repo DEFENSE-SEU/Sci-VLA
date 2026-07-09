@@ -18,6 +18,21 @@ PCR_PLATE_PLACE_RETREAT_OFFSET = np.array([0.0, -0.1, 0.1])
 PCR_PLATE_PICK_CLEARANCE_OFFSET = np.array([0.0, -0.1, 0.25])
 PCR_PLATE_GRIP_SETTLE_OFFSET = np.array([-0.01, 0.0, 0.0])
 
+THERMAL_CYCLER_PROMPT_TASKS = {
+    "open the lid of the thermal cycler": "open_thermal_cycler_lid",
+    "place pcrplate into the thermal cycler": "place_pcrPlate_into_thermalCycler",
+    "close the lid of the thermal cycler": "close_thermal_cycler_lid",
+    "screw tighten the knob of the thermal cycler": "screw_tighten_knob",
+    "press the button of the thermal cycler": "press_thermal_cycler_button",
+    "press the button to start the thermal cycler": "press_thermal_cycler_button",
+    "screw loosen the knob of the thermal cycler": "screw_loosen_knob",
+    "take pcrplate from the thermal cycler": "take_pcrPlate_from_thermalCycler",
+}
+
+
+def _normalize_prompt(text: str) -> str:
+    return " ".join(text.replace("_", " ").replace("-", " ").lower().split())
+
 def set_gravcomp(body: mujoco.MjsBody):
     body.gravcomp = 1
     for child in body.bodies:
@@ -251,10 +266,12 @@ class ThermalCyclerManipulate(Task):
         manager = Manager.from_spec(spec, [self.instrument])
         super().__init__(manager)
         self.arm = UR5eArm(self.model, '/ur:')
+        self._thermal_cycler_button_touched = False
 
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
+        self._thermal_cycler_button_touched = False
 
         # Randomize the arm joint position
         perturbation = self.arm.qpos_perturb()
@@ -281,6 +298,11 @@ class ThermalCyclerManipulate(Task):
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
                 self.data.qpos[self.instrument.lever_qposadr] = self.instrument.lever_jntlimit[0]
+                knob_range = self.model.jnt_range[self.instrument.lid_force_knob_joint]
+                knob_tight_qpos = np.clip(np.pi / 2, knob_range[0], knob_range[1])
+                knob_dofadr = self.model.jnt_dofadr[self.instrument.lid_force_knob_joint]
+                self.data.qpos[self.instrument.lid_force_knob_qposadr] = knob_tight_qpos
+                self.data.qvel[knob_dofadr] = 0.0
                 mujoco.mj_kinematics(self.model, self.data)
                 prefix=''
             case "close_thermal_cycler_lid":
@@ -377,15 +399,89 @@ class ThermalCyclerManipulate(Task):
 
         return self.task_info
 
-    def check(self):
+    def _success_task_from_prompt(self, prompt: str | None) -> str:
+        if prompt is None:
+            return self.task
+
+        normalized = _normalize_prompt(prompt)
+        if normalized in THERMAL_CYCLER_PROMPT_TASKS:
+            return THERMAL_CYCLER_PROMPT_TASKS[normalized]
+        if "open" in normalized and "lid" in normalized:
+            return "open_thermal_cycler_lid"
+        if "close" in normalized and "lid" in normalized:
+            return "close_thermal_cycler_lid"
+        if "place" in normalized and "pcrplate" in normalized:
+            return "place_pcrPlate_into_thermalCycler"
+        if "take" in normalized and "pcrplate" in normalized:
+            return "take_pcrPlate_from_thermalCycler"
+        if "tighten" in normalized and "knob" in normalized:
+            return "screw_tighten_knob"
+        if "loosen" in normalized and "knob" in normalized:
+            return "screw_loosen_knob"
+        if "press" in normalized and "button" in normalized:
+            return "press_thermal_cycler_button"
+        return self.task
+
+    def _pcr_plate_position(self) -> np.ndarray:
+        pcr_plate_jnt_adr = self.model.joint('pcr_plate_free').qposadr.item()
+        return np.asarray(self.data.qpos[pcr_plate_jnt_adr:pcr_plate_jnt_adr + 3], dtype=np.float64)
+
+    def _plate_near(self, target_pos: np.ndarray, xy_tol: float = 0.06, z_tol: float = 0.12) -> bool:
+        plate_pos = self._pcr_plate_position()
+        target_pos = np.asarray(target_pos, dtype=np.float64)
+        return (
+            np.linalg.norm(plate_pos[:2] - target_pos[:2]) <= xy_tol
+            and abs(float(plate_pos[2] - target_pos[2])) <= z_tol
+        )
+
+    def _knob_tightened(self, min_qpos: float = np.pi / 4) -> bool:
+        knob_qpos = float(self.data.qpos[self.instrument.lid_force_knob_qposadr])
+        return knob_qpos >= min_qpos
+
+    def _knob_loosened(self, max_qpos: float = 0.35) -> bool:
+        knob_qpos = float(self.data.qpos[self.instrument.lid_force_knob_qposadr])
+        return knob_qpos <= max_qpos
+
+    def _eef_near_start_button(self, tol: float = 0.07) -> bool:
+        gripper_pose = self.arm.get_site_pose(self.data)
+        button_body_id = self.model.body("/thermal_cycler_biorad_c1000:start-button").id
+        button_pos = np.asarray(self.data.xpos[button_body_id], dtype=np.float64)
+        return np.linalg.norm(gripper_pose.pos - button_pos) <= tol
+
+    def _update_button_touch_state(self):
+        if self._eef_near_start_button():
+            self._thermal_cycler_button_touched = True
+
+    def step_and_log(self, info: dict):
+        super().step_and_log(info)
+        self._update_button_touch_state()
+
+    def check(self, prompt: str | None = None):
+        self._update_button_touch_state()
+        task = self._success_task_from_prompt(prompt)
         cur_qpos = self.data.qpos[[self.instrument.lid_qposadr, self.instrument.lever_qposadr]]
-        match self.task:
+
+        match task:
             case 'close_thermal_cycler_lid':
-                if abs(cur_qpos[0] + 1.9) < 0.01 and abs(cur_qpos[1] + 0.94) < 0.01:
-                    return True
+                return (
+                    abs(float(cur_qpos[0] - self.instrument.lid_jntlimit[0])) < 0.03
+                    and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[0])) < 0.03
+                )
             case 'open_thermal_cycler_lid':
-                if abs(cur_qpos[0]) < 0.003 and abs(cur_qpos[1]) < 0.003:
-                    return True
+                return (
+                    abs(float(cur_qpos[0] - self.instrument.lid_jntlimit[1])) < 0.03
+                    and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[1])) < 0.03
+                )
+            case 'place_pcrPlate_into_thermalCycler':
+                return self._plate_near(PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET)
+            case 'take_pcrPlate_from_thermalCycler':
+                return self._plate_near(PCR_PLATE_TABLE_POS, xy_tol=0.08, z_tol=0.14)
+            case 'screw_tighten_knob':
+                return self._knob_tightened()
+            case 'screw_loosen_knob':
+                return self._knob_loosened()
+            case 'press_thermal_cycler_button':
+                return self._thermal_cycler_button_touched
         return False
 
 

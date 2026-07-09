@@ -73,6 +73,7 @@ def configure_mujoco_env(gl_backend: str, render_device_id: str | None = None):
         os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
 
 POLICY_BACKENDS = ("openpi", "labvla")
+EXPERIMENT_MODES = ("no-transition", "baseline", "no-retrieval", "no-agent", "full")
 
 
 def prepare_policy_observation(obs: dict, policy_backend: str) -> dict:
@@ -114,6 +115,64 @@ def make_policy(host: str, port: int, policy_backend: str = "openpi") -> "Policy
 
     return policy_fn
 
+
+def resolve_experiment_mode_config(
+    *,
+    experiment_mode: str,
+    use_transition_generation: bool,
+    transition_mode: str,
+    no_planning: bool,
+    no_interpolation: bool,
+    no_retrieval: bool,
+) -> dict:
+    mode = (experiment_mode or "no-transition").strip().lower().replace("_", "-")
+    if mode not in EXPERIMENT_MODES:
+        raise ValueError(f"Unsupported experiment_mode: {experiment_mode}")
+
+    if mode == "no-transition":
+        return {
+            "use_transition_generation": False,
+            "transition_mode": "none",
+            "no_planning": False,
+            "no_interpolation": False,
+            "no_retrieval": False,
+        }
+
+    if mode == "baseline":
+        return {
+            "use_transition_generation": True,
+            "transition_mode": "random_future_task_pose_rrt",
+            "no_planning": False,
+            "no_interpolation": False,
+            "no_retrieval": False,
+        }
+
+    if mode == "no-retrieval":
+        return {
+            "use_transition_generation": True,
+            "transition_mode": "llm",
+            "no_planning": False,
+            "no_interpolation": True,
+            "no_retrieval": True,
+        }
+
+    if mode == "no-agent":
+        return {
+            "use_transition_generation": True,
+            "transition_mode": "llm",
+            "no_planning": True,
+            "no_interpolation": False,
+            "no_retrieval": False,
+        }
+
+    return {
+        "use_transition_generation": True,
+        "transition_mode": "llm",
+        "no_planning": False,
+        "no_interpolation": False,
+        "no_retrieval": False,
+    }
+
 def evaluate_task(
     evaluator: "Evaluator",
     policy: "Policy",
@@ -124,12 +183,15 @@ def evaluate_task(
     transition_mode: str = "auto",
     no_planning: bool = False,
     no_interpolation: bool = False,
+    no_retrieval: bool = False,
     control_fps: float = 50.0,
     llm_config: dict | None = None,
     use_task_judge: bool = False,
     max_prompt_retries: int = 1,
     judge_confidence_threshold: float = 0.6,
     judge_on_error: str = "fail",
+    intervention_mode: str = "non_timeout",
+    transition_seed: int | None = None,
 ):
     evaluator.task.reset(seed=seed)
     # evaluator.task.set_serializer(log_root="logs/xxxx", log_name=str(seed))
@@ -141,12 +203,15 @@ def evaluate_task(
         transition_mode=transition_mode,
         no_planning=no_planning,
         no_interpolation=no_interpolation,
+        no_retrieval=no_retrieval,
         control_fps=control_fps,
         llm_config=llm_config,
         use_task_judge=use_task_judge,
         max_prompt_retries=max_prompt_retries,
         judge_confidence_threshold=judge_confidence_threshold,
         judge_on_error=judge_on_error,
+        intervention_mode=intervention_mode,
+        transition_seed=transition_seed,
     )
 
 
@@ -193,6 +258,57 @@ def print_running_average_timing(timings: list[dict]):
         f"avg transition ratio={ratio_avg:.2f}%"
     )
 
+
+def build_atomic_task_success_summary(
+    episode_timings: list[dict],
+    num_episodes: int,
+) -> dict[str, dict[str, int]]:
+    summary: dict[str, dict[str, int]] = {}
+
+    for timing in episode_timings:
+        episode_results = timing.get("atomic_task_results", [])
+        if not isinstance(episode_results, list):
+            continue
+
+        prompt_success_by_episode: dict[str, bool] = {}
+        for result in episode_results:
+            if not isinstance(result, dict):
+                continue
+            prompt = result.get("prompt")
+            if prompt is None:
+                prompt = "__task__"
+            prompt = str(prompt)
+            prompt_success_by_episode[prompt] = (
+                prompt_success_by_episode.get(prompt, False)
+                or bool(result.get("success", False))
+            )
+
+        for prompt, prompt_success in prompt_success_by_episode.items():
+            if prompt not in summary:
+                summary[prompt] = {
+                    "success_count": 0,
+                    "episode_count": 0,
+                    "max_success": int(num_episodes),
+                }
+            summary[prompt]["episode_count"] += 1
+            if prompt_success:
+                summary[prompt]["success_count"] += 1
+
+    return summary
+
+
+def print_atomic_task_success_summary(summary: dict[str, dict[str, int]]):
+    if len(summary) == 0:
+        return
+
+    print("[AtomicTaskSuccess] Final per-atomic-task success counts:")
+    for prompt, stats in summary.items():
+        print(
+            f"[AtomicTaskSuccess] {prompt}: "
+            f"{stats['success_count']}/{stats['max_success']} "
+            f"(evaluated_episodes={stats['episode_count']})"
+        )
+
 _evaluator: "Evaluator"
 _policy: "Policy"
 _prompts: list[str] | None = None
@@ -201,12 +317,14 @@ _use_transition_generation: bool
 _transition_mode: str
 _no_planning: bool
 _no_interpolation: bool
+_no_retrieval: bool
 _control_fps: float
 _llm_config: dict | None = None
 _use_task_judge: bool
 _max_prompt_retries: int
 _judge_confidence_threshold: float
 _judge_on_error: str
+_intervention_mode: str
 _log_file_handle = None
 
 
@@ -250,16 +368,19 @@ def init_worker(
     image_history: int,
     time_limit: float,
     video_fps: int,
+    render_video: bool,
     use_transition_generation: bool,
     transition_mode: str,
     no_planning: bool,
     no_interpolation: bool,
+    no_retrieval: bool,
     control_fps: float,
     llm_config: dict | None,
     use_task_judge: bool,
     max_prompt_retries: int,
     judge_confidence_threshold: float,
     judge_on_error: str,
+    intervention_mode: str,
     mujoco_gl: str,
     queue,
     prompts: list[str] | None = None,
@@ -271,9 +392,9 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _transition_mode, _no_planning, _no_interpolation, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _transition_mode, _no_planning, _no_interpolation, _no_retrieval, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error, _intervention_mode
     task = create_task(task_name)
-    _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps)
+    _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps, render_video=render_video)
     _policy = make_policy(host, port, policy_backend)
     _prompts = prompts
     _time_limit = time_limit
@@ -281,12 +402,14 @@ def init_worker(
     _transition_mode = transition_mode
     _no_planning = no_planning
     _no_interpolation = no_interpolation
+    _no_retrieval = no_retrieval
     _control_fps = control_fps
     _llm_config = llm_config
     _use_task_judge = use_task_judge
     _max_prompt_retries = max_prompt_retries
     _judge_confidence_threshold = judge_confidence_threshold
     _judge_on_error = judge_on_error
+    _intervention_mode = intervention_mode
 
 def step_worker(seed: int):
     return evaluate_task(
@@ -299,12 +422,15 @@ def step_worker(seed: int):
         _transition_mode,
         _no_planning,
         _no_interpolation,
+        _no_retrieval,
         _control_fps,
         _llm_config,
         _use_task_judge,
         _max_prompt_retries,
         _judge_confidence_threshold,
         _judge_on_error,
+        _intervention_mode,
+        transition_seed=seed,
     )
 
 def parse_args():
@@ -328,7 +454,23 @@ def parse_args():
     parser.add_argument("--render_device_id", type=str, default='0', help="Comma-separated list of GPU device IDs for rendering")
     parser.add_argument("--prompts", type=str, default=None, help="Comma-separated list of prompts to execute sequentially")
     parser.add_argument("--time_limit", type=float, default=100, help="per task time limit")
+    parser.add_argument(
+        "--intervention-mode",
+        type=str,
+        default="timeout",
+        choices=["non_timeout", "timeout"],
+        help=(
+            "Prompt intervention mode: non_timeout stops VLA as soon as local task success "
+            "is detected; timeout runs each prompt until time_limit, then checks success."
+        ),
+    )
     parser.add_argument("--video_fps", type=int, default=20, help="Replay video FPS")
+    parser.add_argument(
+        "--render-video",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to capture and save replay videos; use --no-render-video to skip videos while still computing success.",
+    )
     parser.add_argument(
         "--control_fps",
         type=float,
@@ -350,10 +492,31 @@ def parse_args():
         help="Whether to run transition generation and execution between prompts",
     )
     parser.add_argument(
+        "--experiment-mode",
+        type=str,
+        default="no-transition",
+        choices=EXPERIMENT_MODES,
+        help=(
+            "High-level experiment mode. no-transition: disable transitions; "
+            "baseline: random next-task init pose + RRT transition, falling back to interpolation; "
+            "no-retrieval: planning/coding agents only with no target restore; "
+            "no-agent: retrieve target pose, then interpolate restore without planning/coding agents; "
+            "full: retrieval + planning + coding."
+        ),
+    )
+    parser.add_argument(
         "--transition-mode",
         type=str,
         default="auto",
-        choices=["auto", "none", "llm", "retrieval_interp", "retrieval_collision_planner"],
+        choices=[
+            "auto",
+            "none",
+            "llm",
+            "retrieval_interp",
+            "retrieval_collision_planner",
+            "random_future_task_pose_collision_planner",
+            "random_future_task_pose_rrt",
+        ],
         help=(
             "Transition executor between prompts. auto preserves --use-transition-generation "
             "behavior; llm uses Sci transition generation; retrieval_* modes use non-LLM baselines."
@@ -368,6 +531,11 @@ def parse_args():
         "--no_interpolation",
         action="store_true",
         help="Run retrieval/planning/codegen but skip final move_to_target_qpos in transition execute",
+    )
+    parser.add_argument(
+        "--no_retrieval",
+        action="store_true",
+        help="Skip target-qpos retrieval for LLM transition generation; intended for no-retrieval ablation.",
     )
     parser.add_argument("--llm-base-url", type=str, default=None, help="LLM base URL for transition generation")
     parser.add_argument("--llm-model-name", type=str, default=None, help="LLM model name for transition generation")
@@ -452,6 +620,23 @@ if __name__ == "__main__":
         "thinking": args.llm_thinking,
         "backend_mode": args.llm_backend_mode,
     }
+    experiment_config = resolve_experiment_mode_config(
+        experiment_mode=args.experiment_mode,
+        use_transition_generation=args.use_transition_generation,
+        transition_mode=args.transition_mode,
+        no_planning=args.no_planning,
+        no_interpolation=args.no_interpolation,
+        no_retrieval=args.no_retrieval,
+    )
+    print(
+        "[ExperimentMode] "
+        f"mode={args.experiment_mode} "
+        f"use_transition_generation={experiment_config['use_transition_generation']} "
+        f"transition_mode={experiment_config['transition_mode']} "
+        f"no_planning={experiment_config['no_planning']} "
+        f"no_interpolation={experiment_config['no_interpolation']} "
+        f"no_retrieval={experiment_config['no_retrieval']}"
+    )
     assert len(render_device_ids) > 0
     success_results: list[float] = []
     episode_timings: list[dict] = []
@@ -463,7 +648,12 @@ if __name__ == "__main__":
         from evaluator import Evaluator
         policy = make_policy(args.host, args.port, args.policy_backend)
         task = create_task(args.task)
-        evaluator = Evaluator(task, image_history=args.image_history, video_fps=args.video_fps)
+        evaluator = Evaluator(
+            task,
+            image_history=args.image_history,
+            video_fps=args.video_fps,
+            render_video=args.render_video,
+        )
         for seed in tqdm(seeds):
             raw_result = evaluate_task(
                 evaluator,
@@ -471,16 +661,19 @@ if __name__ == "__main__":
                 seed,
                 time_limit,
                 prompts,
-                args.use_transition_generation,
-                args.transition_mode,
-                args.no_planning,
-                args.no_interpolation,
+                experiment_config["use_transition_generation"],
+                experiment_config["transition_mode"],
+                experiment_config["no_planning"],
+                experiment_config["no_interpolation"],
+                experiment_config["no_retrieval"],
                 args.control_fps,
                 llm_config,
                 args.use_task_judge,
                 args.max_prompt_retries,
                 args.judge_confidence_threshold,
                 args.judge_on_error,
+                args.intervention_mode,
+                transition_seed=seed,
             )
             success, timing = normalize_eval_result(raw_result)
             success_results.append(float(success))
@@ -508,16 +701,19 @@ if __name__ == "__main__":
                 args.image_history,
                 time_limit,
                 args.video_fps,
-                args.use_transition_generation,
-                args.transition_mode,
-                args.no_planning,
-                args.no_interpolation,
+                args.render_video,
+                experiment_config["use_transition_generation"],
+                experiment_config["transition_mode"],
+                experiment_config["no_planning"],
+                experiment_config["no_interpolation"],
+                experiment_config["no_retrieval"],
                 args.control_fps,
                 llm_config,
                 args.use_task_judge,
                 args.max_prompt_retries,
                 args.judge_confidence_threshold,
                 args.judge_on_error,
+                args.intervention_mode,
                 mujoco_gl,
                 queue,
                 prompts,
@@ -544,6 +740,9 @@ if __name__ == "__main__":
             f"[TimingAvg] Final global transition avg duration: "
             f"{final_transition_avg:.3f}s (total_transitions={total_transitions})"
         )
+
+    atomic_task_summary = build_atomic_task_success_summary(episode_timings, args.num_episodes)
+    print_atomic_task_success_summary(atomic_task_summary)
 
     if args.save:
         import json

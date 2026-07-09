@@ -108,6 +108,12 @@ def format_calibration_for_llm(payload: dict | None) -> str:
         lines.append(
             f"- end_effector/{ee.get('site_name')}: position_world={ee.get('position_world')}"
         )
+    target_ee = payload.get("target_end_effector")
+    if isinstance(target_ee, dict):
+        lines.append(
+            f"- target_end_effector/{target_ee.get('site_name')}: "
+            f"position_world={target_ee.get('position_world')}"
+        )
     lines.append(
         "Use the images for visual evidence, but use this calibration text for spatial direction, depth, and clearance reasoning."
     )

@@ -1125,6 +1125,32 @@ _CONFIGS = [
         save_interval=10_000,
     ),
     TrainConfig(
+        name="mani_thermalcycler_pi0",
+        data=LeRoboAutoBioDataConfig(
+            repo_id="mani_thermalcycler",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(asset_id="mani_thermalcycler"),
+        ),
+        model=pi0_config.Pi0Config(),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=50_000,
+        wandb_enabled=False,
+        save_interval=10_000,
+    ),
+    TrainConfig(
+        name="mani_centrifuge5910_pi0",
+        data=LeRoboAutoBioDataConfig(
+            repo_id="mani_centrifuge5910",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(asset_id="mani_centrifuge5910"),
+        ),
+        model=pi0_config.Pi0Config(),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=50_000,
+        wandb_enabled=False,
+        save_interval=10_000,
+    ),
+    TrainConfig(
         name="mani_centrifuge5910_pi05-lora",
         model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRoboAutoBioDataConfig(

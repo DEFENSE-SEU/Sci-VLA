@@ -1,6 +1,7 @@
 import json
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
@@ -91,6 +92,156 @@ def _candidate_waypoints(
     return candidates
 
 
+def _normalize_prompt(text: str) -> str:
+    return " ".join(str(text).lower().strip().split())
+
+
+def _find_local_prompt_match(
+    task_prompt: str,
+    prompt_choices: list[str],
+    *,
+    cutoff: float = 0.72,
+) -> tuple[str, float] | None:
+    if not prompt_choices:
+        return None
+
+    norm_prompt = _normalize_prompt(task_prompt)
+    norm_map = {_normalize_prompt(prompt): prompt for prompt in prompt_choices}
+    if norm_prompt in norm_map:
+        return norm_map[norm_prompt], 1.0
+
+    best_norm = None
+    best_score = 0.0
+    for choice_norm in norm_map:
+        score = SequenceMatcher(None, norm_prompt, choice_norm).ratio()
+        if score > best_score:
+            best_norm = choice_norm
+            best_score = score
+
+    if best_norm is None or best_score < float(cutoff):
+        return None
+    return norm_map[best_norm], float(best_score)
+
+
+def _build_task_prompt_index(qpos_db: dict | list) -> dict:
+    tasks = qpos_db if isinstance(qpos_db, list) else qpos_db.get("tasks", [])
+    if not isinstance(tasks, list):
+        raise ValueError("Invalid qpos database format: expected a list")
+
+    by_prompt = {}
+    for task in tasks:
+        prompt = str(task.get("task", task.get("task_prompt", ""))).strip()
+        if prompt:
+            by_prompt[prompt] = task
+    if not by_prompt:
+        raise ValueError("No valid task prompts found in qpos database")
+    return by_prompt
+
+
+def _qpos_joint_distance(candidate_qpos, current_joint_pos: np.ndarray) -> float:
+    cur = np.asarray(current_joint_pos, dtype=np.float64).reshape(-1)
+    q_arr = np.asarray(candidate_qpos, dtype=np.float64).reshape(-1)
+    dim = min(6, cur.size, q_arr.size)
+    if dim <= 0:
+        return float("inf")
+    if not np.isfinite(cur[:dim]).all() or not np.isfinite(q_arr[:dim]).all():
+        return float("inf")
+    return float(np.linalg.norm(cur[:dim] - q_arr[:dim]))
+
+
+def select_target_qpos_candidate(
+    stacked_qpos: list,
+    current_joint_pos: np.ndarray,
+    *,
+    top_k: int = 3,
+    path_validator: Callable[..., bool | dict] | None = None,
+) -> dict:
+    if not isinstance(stacked_qpos, list) or len(stacked_qpos) == 0:
+        raise ValueError("No qpos candidates provided")
+
+    effective_top_k = max(1, int(top_k or 3))
+    ranked_candidates = []
+    for i, qpos in enumerate(stacked_qpos):
+        ranked_candidates.append(
+            {
+                "index": i,
+                "distance": _qpos_joint_distance(qpos, current_joint_pos),
+                "qpos": np.asarray(qpos, dtype=np.float64).reshape(-1),
+            }
+        )
+    ranked_candidates.sort(key=lambda item: (item["distance"], item["index"]))
+    top_candidates = ranked_candidates[: min(effective_top_k, len(ranked_candidates))]
+
+    if path_validator is None:
+        selected = top_candidates[0]
+        return {
+            "selected_index": selected["index"],
+            "selected_qpos": selected["qpos"],
+            "selected_distance": selected["distance"],
+            "top_k": effective_top_k,
+            "validation": None,
+            "top_candidates": [
+                {"index": item["index"], "distance": item["distance"]}
+                for item in top_candidates
+            ],
+        }
+
+    validation_records = [
+        {"index": item["index"], "distance": item["distance"]}
+        for item in top_candidates
+    ]
+    for candidate in top_candidates:
+        try:
+            validation = path_validator(
+                candidate["qpos"],
+                selected_index=candidate["index"],
+            )
+        except Exception as e:
+            validation = {
+                "valid": False,
+                "reason": "validator_exception",
+                "error": str(e),
+            }
+        is_valid, validation_payload = _validation_is_valid(validation)
+        record_index = next(
+            i for i, item in enumerate(validation_records)
+            if item["index"] == candidate["index"]
+        )
+        record = {
+            "index": candidate["index"],
+            "distance": candidate["distance"],
+            "valid": is_valid,
+        }
+        if validation_payload is not None:
+            record.update(validation_payload)
+        validation_records[record_index] = record
+        if is_valid:
+            return {
+                "selected_index": candidate["index"],
+                "selected_qpos": candidate["qpos"],
+                "selected_distance": candidate["distance"],
+                "top_k": effective_top_k,
+                "validation": record,
+                "top_candidates": validation_records,
+            }
+
+    fallback = top_candidates[0]
+    return {
+        "selected_index": fallback["index"],
+        "selected_qpos": fallback["qpos"],
+        "selected_distance": fallback["distance"],
+        "top_k": effective_top_k,
+        "validation": {
+            "index": fallback["index"],
+            "distance": fallback["distance"],
+            "valid": False,
+            "reason": "validation_failed_fallback",
+        },
+        "top_candidates": validation_records,
+        "fallback_reason": "top_k_validation_exhausted",
+    }
+
+
 def plan_joint_path_collision_aware(
     start_qpos,
     target_qpos,
@@ -126,6 +277,129 @@ def plan_joint_path_collision_aware(
             return JointPathPlan(waypoints=waypoint_path, status="waypoint", validation=payload)
 
     return JointPathPlan(waypoints=direct_path, status="fallback_direct", validation=last_payload)
+
+
+def _rrt_sampling_bounds(
+    start: np.ndarray,
+    target: np.ndarray,
+    joint_ranges: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if joint_ranges is not None:
+        ranges = np.asarray(joint_ranges, dtype=np.float64)
+        if ranges.shape[0] >= start.size and ranges.shape[1] == 2:
+            lower = ranges[: start.size, 0]
+            upper = ranges[: start.size, 1]
+            if np.isfinite(lower).all() and np.isfinite(upper).all() and np.all(upper > lower):
+                return lower.copy(), upper.copy()
+
+    margin = np.maximum(np.pi, np.abs(target - start) + 0.5)
+    lower = np.minimum(start, target) - margin
+    upper = np.maximum(start, target) + margin
+    return lower, upper
+
+
+def _reconstruct_rrt_path(nodes: list[np.ndarray], parents: list[int], end_index: int) -> list[np.ndarray]:
+    path = []
+    index = end_index
+    while index >= 0:
+        path.append(nodes[index])
+        index = parents[index]
+    path.reverse()
+    return path
+
+
+def plan_joint_path_rrt(
+    start_qpos,
+    target_qpos,
+    *,
+    path_validator: PathValidator | None,
+    joint_ranges=None,
+    rng: np.random.Generator | None = None,
+    max_iterations: int = 512,
+    step_size: float = 0.25,
+    goal_sample_rate: float = 0.2,
+    goal_tolerance: float = 0.15,
+) -> JointPathPlan:
+    start = _as_joint_vector(start_qpos)
+    target = _as_joint_vector(target_qpos, dim=start.size)
+    if target.size != start.size:
+        raise ValueError(f"Target qpos dim {target.size} does not match start dim {start.size}")
+
+    direct_path = [start, target]
+    if path_validator is None:
+        return JointPathPlan(waypoints=direct_path, status="rrt_direct_no_validator", validation=None)
+
+    valid, payload = _validation_is_valid(path_validator(direct_path))
+    if valid:
+        return JointPathPlan(waypoints=direct_path, status="rrt_direct", validation=payload)
+
+    last_payload = payload
+    generator = rng if rng is not None else np.random.default_rng()
+    lower, upper = _rrt_sampling_bounds(
+        start,
+        target,
+        None if joint_ranges is None else np.asarray(joint_ranges, dtype=np.float64),
+    )
+    nodes = [start]
+    parents = [-1]
+    iterations = max(1, int(max_iterations))
+    edge_step = max(1e-6, float(step_size))
+    goal_rate = float(np.clip(goal_sample_rate, 0.0, 1.0))
+    tolerance = max(1e-6, float(goal_tolerance))
+
+    for _ in range(iterations):
+        if float(generator.random()) < goal_rate:
+            sample = target
+        else:
+            sample = generator.uniform(lower, upper)
+
+        distances = np.asarray([np.linalg.norm(node - sample) for node in nodes], dtype=np.float64)
+        nearest_index = int(np.argmin(distances))
+        nearest = nodes[nearest_index]
+        delta = sample - nearest
+        distance = float(np.linalg.norm(delta))
+        if distance <= 1e-12:
+            continue
+
+        if distance > edge_step:
+            candidate = nearest + (delta / distance) * edge_step
+        else:
+            candidate = sample
+        candidate = _clamp_to_joint_ranges(candidate, np.column_stack([lower, upper]))
+
+        valid, payload = _validation_is_valid(path_validator([nearest, candidate]))
+        last_payload = payload
+        if not valid:
+            continue
+
+        nodes.append(candidate)
+        parents.append(nearest_index)
+        candidate_index = len(nodes) - 1
+
+        if np.linalg.norm(candidate - target) <= tolerance:
+            valid, payload = _validation_is_valid(path_validator([candidate, target]))
+            last_payload = payload
+            if valid:
+                nodes.append(target)
+                parents.append(candidate_index)
+                return JointPathPlan(
+                    waypoints=_reconstruct_rrt_path(nodes, parents, len(nodes) - 1),
+                    status="rrt",
+                    validation=payload,
+                )
+
+    fallback_payload = {
+        "valid": False,
+        "reason": "rrt_failed_fallback_to_interpolation",
+        "last_validation": last_payload,
+        "iterations": iterations,
+        "nodes": len(nodes),
+    }
+    return JointPathPlan(
+        waypoints=direct_path,
+        status="FALLBACK_RRT_TO_INTERPOLATION",
+        validation=fallback_payload,
+    )
 
 
 def interpolate_joint_path(waypoints: list[np.ndarray], *, steps_per_segment: int) -> list[np.ndarray]:
@@ -277,8 +551,6 @@ def retrieve_target_qpos_non_llm(
     path_validator=None,
     match_cutoff: float = 0.72,
 ) -> tuple[np.ndarray, dict]:
-    from transition_generation import _fallback_find_qpos
-
     if not qpos_db_path.exists():
         raise FileNotFoundError(
             f"Qpos database not found at {qpos_db_path}. "
@@ -287,25 +559,97 @@ def retrieve_target_qpos_non_llm(
     with open(qpos_db_path, "r", encoding="utf-8") as f:
         qpos_db = json.load(f)
 
-    matched_prompt, selected_qpos, candidate_count, selected_index, selection = _fallback_find_qpos(
+    matched_prompt, stacked_qpos = _stacked_qpos_for_prompt(
         qpos_db,
         target_prompt,
+        match_cutoff=match_cutoff,
+    )
+    selection = select_target_qpos_candidate(
+        stacked_qpos,
         current_joint_pos,
         top_k=top_k,
         path_validator=path_validator,
-        match_cutoff=match_cutoff,
     )
+    selected_index = int(selection["selected_index"])
+    selected_qpos = stacked_qpos[selected_index]
     selected_qpos_arr = _as_joint_vector(selected_qpos)
     return selected_qpos_arr, {
         "requested_task_prompt": target_prompt,
         "matched_task_prompt": matched_prompt,
         "selected_index": selected_index,
-        "candidate_count": candidate_count,
+        "candidate_count": len(stacked_qpos),
         "top_k": max(1, int(top_k or 3)),
         "selection": {
             **selection,
             "selected_qpos": _as_joint_vector(selection["selected_qpos"]).tolist(),
         },
+    }
+
+
+def _stacked_qpos_for_prompt(
+    qpos_db: dict | list,
+    target_prompt: str,
+    *,
+    match_cutoff: float = 0.5,
+) -> tuple[str, list]:
+    by_prompt = _build_task_prompt_index(qpos_db)
+    local_match = _find_local_prompt_match(
+        target_prompt,
+        list(by_prompt.keys()),
+        cutoff=match_cutoff,
+    )
+    if local_match is None:
+        raise ValueError(f"No task prompt matched for: {target_prompt}")
+
+    matched_prompt, _score = local_match
+    matched = by_prompt[matched_prompt]
+    stacked_qpos = matched.get("initial_qpos")
+    if isinstance(stacked_qpos, list) and len(stacked_qpos) > 0:
+        return matched_prompt, stacked_qpos
+
+    entries = matched.get("entries", [])
+    if not isinstance(entries, list) or len(entries) == 0:
+        raise ValueError(f"Matched task has no qpos entries: {matched_prompt}")
+    stacked_qpos = [
+        entry.get("initial_qpos")
+        for entry in entries
+        if entry.get("initial_qpos") is not None
+    ]
+    if not stacked_qpos:
+        raise ValueError(f"Matched task entries have no initial_qpos: {matched_prompt}")
+    return matched_prompt, stacked_qpos
+
+
+def sample_random_future_task_qpos(
+    *,
+    target_prompt: str,
+    qpos_db_path: Path = Path("logs/lerobot_initial_qpos.json"),
+    rng: np.random.Generator | None = None,
+    match_cutoff: float = 0.5,
+) -> tuple[np.ndarray, dict]:
+    if not qpos_db_path.exists():
+        raise FileNotFoundError(
+            f"Qpos database not found at {qpos_db_path}. "
+            "Please run export_lerobot_initial_qpos.py first."
+        )
+    with open(qpos_db_path, "r", encoding="utf-8") as f:
+        qpos_db = json.load(f)
+
+    matched_prompt, stacked_qpos = _stacked_qpos_for_prompt(
+        qpos_db,
+        target_prompt,
+        match_cutoff=match_cutoff,
+    )
+    generator = rng if rng is not None else np.random.default_rng()
+    selected_index = int(generator.integers(0, len(stacked_qpos)))
+    selected_qpos = _as_joint_vector(stacked_qpos[selected_index])
+    return selected_qpos, {
+        "requested_task_prompt": target_prompt,
+        "matched_task_prompt": matched_prompt,
+        "selected_index": selected_index,
+        "candidate_count": len(stacked_qpos),
+        "selection_strategy": "random_future_task_pose",
+        "selected_qpos": selected_qpos.tolist(),
     }
 
 
@@ -320,8 +664,14 @@ def execute_non_llm_transition(
     restore_steps_per_segment: int = 250,
     validation_steps_per_segment: int = 100,
     qpos_db_path: Path = Path("logs/lerobot_initial_qpos.json"),
+    rng: np.random.Generator | None = None,
 ) -> dict:
-    if mode not in {"retrieval_interp", "retrieval_collision_planner"}:
+    if mode not in {
+        "retrieval_interp",
+        "retrieval_collision_planner",
+        "random_future_task_pose_collision_planner",
+        "random_future_task_pose_rrt",
+    }:
         raise ValueError(f"Unsupported non-LLM transition mode: {mode}")
 
     ur_joint_start = model.joint("/ur:shoulder_pan").qposadr.item()
@@ -333,17 +683,43 @@ def execute_non_llm_transition(
     joint_ranges = None
     planning_start = time.perf_counter()
 
-    target_qpos, retrieval_info = retrieve_target_qpos_non_llm(
-        target_prompt=target_prompt,
-        current_joint_pos=current_joint_pos,
-        top_k=target_top_k,
-        qpos_db_path=qpos_db_path,
-        path_validator=None,
-    )
+    if mode in {"random_future_task_pose_collision_planner", "random_future_task_pose_rrt"}:
+        target_qpos, retrieval_info = sample_random_future_task_qpos(
+            target_prompt=target_prompt,
+            qpos_db_path=qpos_db_path,
+            rng=rng,
+        )
+    else:
+        target_qpos, retrieval_info = retrieve_target_qpos_non_llm(
+            target_prompt=target_prompt,
+            current_joint_pos=current_joint_pos,
+            top_k=target_top_k,
+            qpos_db_path=qpos_db_path,
+            path_validator=None,
+        )
     target_arm_qpos = _as_joint_vector(target_qpos, dim=current_joint_pos.size)
     target_gripper = float(target_qpos[-1]) if target_qpos.size > current_joint_pos.size else None
 
-    if mode == "retrieval_collision_planner":
+    if mode == "random_future_task_pose_rrt":
+        path_plan = plan_joint_path_rrt(
+            current_joint_pos,
+            target_arm_qpos,
+            path_validator=lambda path: validate_joint_path_in_mujoco(
+                model,
+                data,
+                jnt_span,
+                path,
+                num_steps_per_segment=validation_steps_per_segment,
+            ),
+            joint_ranges=joint_ranges,
+            rng=rng,
+        )
+        if "FALLBACK" in path_plan.status:
+            print(
+                "[NonLLMTransition] RRT FAILED; FALLBACK to direct interpolation "
+                f"for target_prompt={target_prompt!r}."
+            )
+    elif mode in {"retrieval_collision_planner", "random_future_task_pose_collision_planner"}:
         path_plan = plan_joint_path_collision_aware(
             current_joint_pos,
             target_arm_qpos,

@@ -34,19 +34,6 @@ class TransitionExpert:
         self.ik = IK(self.dof, self.model, data, self.base_name, self.site_name)
         self.dt = self.model.opt.timestep
 
-        self.lid_lock = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_EQUALITY, '/thermal_cycler_biorad_c1000:lid-lock')
-        self.lid_joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, '/thermal_cycler_biorad_c1000:lid')
-        self.lid_qpos_min = model.jnt_range[self.lid_joint, 0].item()
-        self.lid_qposadr = model.jnt_qposadr[self.lid_joint].item()
-        self.lid_force_knob_joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, '/thermal_cycler_biorad_c1000:lid-force-knob')
-        self.lid_force_knob_qposadr = model.jnt_qposadr[self.lid_force_knob_joint].item()
-        self.lid_jntlimit = model.jnt_range[self.lid_joint]
-        self.lever_joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, '/thermal_cycler_biorad_c1000:lid-lever')
-        self.lever_qposadr = model.jnt_qposadr[self.lever_joint].item()
-        self.lever_jntlimit = model.jnt_range[self.lever_joint]
-        self.lever_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, '/thermal_cycler_biorad_c1000:lid-lever')
-        self.knob_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, '/thermal_cycler_biorad_c1000:lid-force-knob')
-
         self.freq = 20
         self.period = int(round(1.0 / self.dt / self.freq))
         self.planner = Topp(
@@ -97,9 +84,75 @@ class TransitionExpert:
         rotation_axis = axis
 
         rotate_90 = R.from_euler(rotation_axis, rotation_angle, degrees=True)
-        target_quat = (rotate_90 * R.from_quat(cur_quat)).as_quat()
+        cur_quat = np.asarray(cur_quat, dtype=np.float64).reshape(4)
+        cur_quat_xyzw = np.array([cur_quat[1], cur_quat[2], cur_quat[3], cur_quat[0]], dtype=np.float64)
+        target_quat_xyzw = (rotate_90 * R.from_quat(cur_quat_xyzw)).as_quat()
+        target_quat = np.array(
+            [target_quat_xyzw[3], target_quat_xyzw[0], target_quat_xyzw[1], target_quat_xyzw[2]],
+            dtype=np.float64,
+        )
 
         return target_quat
+
+    def set_gripper(self, value: float, delay: int = 300):
+        self.gripper_control(float(value), delay=delay)
+
+    def translate_ee(self, axis: str, distance_m: float, steps: int = 100):
+        axis_to_delta = {
+            "x": np.array([1.0, 0.0, 0.0], dtype=np.float64),
+            "y": np.array([0.0, 1.0, 0.0], dtype=np.float64),
+            "z": np.array([0.0, 0.0, 1.0], dtype=np.float64),
+        }
+        axis_key = str(axis).lower()
+        if axis_key not in axis_to_delta:
+            raise ValueError(f"Invalid translate axis: {axis}")
+        cur_pose = self.get_site_pose(self.data)
+        end_pose = Pose(
+            pos=cur_pose.pos + axis_to_delta[axis_key] * float(distance_m),
+            quat=cur_pose.quat,
+        )
+        self.move_to(end_pose, num_steps=int(steps))
+
+    def rotate_ee(self, axis: str, angle_deg: float, steps: int = 100):
+        axis_key = str(axis).lower()
+        if axis_key not in {"x", "y", "z"}:
+            raise ValueError(f"Invalid rotate axis: {axis}")
+        cur_pose = self.get_site_pose(self.data)
+        target_quat = self.rotate_gripper(float(angle_deg), axis_key, cur_pose.quat)
+        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
+        self.move_to(end_pose, num_steps=int(steps))
+
+    def wait_steps(self, steps: int):
+        for _ in range(int(steps)):
+            self.task.step_and_log({})
+
+    def execute_transition_commands(self, commands: list[dict]):
+        for command in commands:
+            op = command.get("op")
+            if op == "open_gripper":
+                self.set_gripper(0.0, delay=int(command.get("delay", 300)))
+            elif op == "close_gripper":
+                self.set_gripper(255.0, delay=int(command.get("delay", 300)))
+            elif op == "set_gripper":
+                self.set_gripper(command["value"], delay=int(command.get("delay", 300)))
+            elif op == "translate":
+                self.translate_ee(
+                    command["axis"],
+                    command["distance_m"],
+                    steps=int(command.get("steps", 100)),
+                )
+            elif op == "rotate":
+                self.rotate_ee(
+                    command["axis"],
+                    command["angle_deg"],
+                    steps=int(command.get("steps", 100)),
+                )
+            elif op == "wait":
+                self.wait_steps(int(command["steps"]))
+            elif op == "restore_target_state":
+                continue
+            else:
+                raise ValueError(f"Unsupported transition command op: {op}")
 
     def move_to_target_qpos(self, q_target, num_steps=1000):
         q_curr = self.data.qpos[self.jnt_span]
@@ -115,37 +168,11 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        # Step 1: Open gripper to ensure it is free from any objects.
-        self.gripper_control(0)
-
-        # Step 2: Move End-Effector 20cm along +z axis to lift clear of the open tray lid.
-        cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.2), quat=cur_pose.quat)
-        self.move_to(end_pose)
-
-        # Step 3: Move End-Effector 15cm along -y axis to shift laterally away from the tray center.
-        cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.0, -0.15, 0.0), quat=cur_pose.quat)
-        self.move_to(end_pose)
-
-        # Step 4: Move End-Effector 10cm along +x axis to back away from the scene.
-        cur_pose = self.get_site_pose(self.data)
-        end_pose = Pose(pos=cur_pose.pos + (0.1, 0.0, 0.0), quat=cur_pose.quat)
-        self.move_to(end_pose)
-
-        # Step 5: Adjust orientation to match final target qpos.
-        cur_pose = self.get_site_pose(self.data)
-        # Using a neutral rotation adjustment logic as specific target values are injected by host code later
-        target_quat = self.rotate_gripper(0, 'z', cur_pose.quat)
-        end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
-        self.move_to(end_pose)
-
-        # Step 6: Close gripper (if needed for final pose, otherwise keep open).
-        self.gripper_control(250)
+        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.11, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.12, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.12, "steps": 100}, {"op": "translate", "axis": "x", "distance_m": 0.08, "steps": 100}])
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path
-        target_qpos_candidates = [[0.030478741973638535, -1.4459112882614136, 1.4453428983688354, -1.5643033981323242, -1.3350318670272827, -1.4915413856506348, 0.0], [-0.12320099771022797, -1.5524479150772095, 1.3857125043869019, -1.8300597667694092, -1.398608684539795, -1.539533257484436, 0.0], [0.09022454172372818, -1.5675280094146729, 1.797960877418518, -1.7616958618164062, -1.3594601154327393, -1.5207726955413818, 0.0]]
+        target_qpos_candidates = [[-3.4000000953674316, -1.655156135559082, 1.6591864824295044, -1.7621535062789917, -1.688430905342102, -1.6606453657150269, 0.0], [-3.4000000953674316, -1.3833837509155273, 1.7184778451919556, -1.5584577322006226, -1.677708625793457, -1.668520212173462, 0.0], [-3.4000000953674316, -1.6982600688934326, 1.7217307090759277, -1.5709794759750366, -1.3848294019699097, -1.670090913772583, 0.0]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],

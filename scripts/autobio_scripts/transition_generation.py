@@ -71,6 +71,11 @@ _TRANSITION_EXPERT_SELF_ALLOWLIST = {
     "period",
     "planner",
     "rotate_gripper",
+    "execute_transition_commands",
+    "set_gripper",
+    "translate_ee",
+    "rotate_ee",
+    "wait_steps",
     "site_id",
     "site_name",
     "state_indices",
@@ -188,6 +193,41 @@ def _load_calibration_payload(path: str | Path = "logs/transition_calibration.js
     except Exception as e:
         print(f"[Calibration] Failed to read {calibration_path}: {e}")
         return None
+
+
+def _rounded_float_vector(values, digits: int = 4) -> list[float] | None:
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size != 3 or not np.isfinite(arr).all():
+        return None
+    return [round(float(value), digits) for value in arr]
+
+
+def _target_end_effector_payload_from_resolver(
+    target_joint_pos: np.ndarray,
+    target_ee_position_resolver: Callable[[np.ndarray], Any] | None,
+    *,
+    site_name: str | None,
+) -> dict | None:
+    if target_ee_position_resolver is None:
+        return None
+    try:
+        position = target_ee_position_resolver(np.asarray(target_joint_pos, dtype=np.float64).copy())
+    except Exception as e:
+        print(f"[Calibration] Failed to resolve target end-effector position: {_sanitize_error_text(e)}")
+        return None
+
+    position_world = _rounded_float_vector(position)
+    if position_world is None:
+        print(f"[Calibration] Invalid target end-effector position from resolver: {position!r}")
+        return None
+
+    payload = {
+        "position_world": position_world,
+        "source": "target_qpos_fk",
+    }
+    if site_name:
+        payload["site_name"] = site_name
+    return payload
 
 
 def _write_json(path: str | Path, payload: dict) -> None:
@@ -676,6 +716,835 @@ def _extract_code_from_response(text: str) -> str:
     if match:
         return match.group(1).strip()
     return content
+
+
+def _axis_and_sign(axis_value) -> tuple[str, float]:
+    axis_text = str(axis_value).strip().lower().replace("_axis", "").replace("-axis", "")
+    sign = 1.0
+    if axis_text.startswith("+"):
+        axis_text = axis_text[1:]
+    elif axis_text.startswith("-"):
+        sign = -1.0
+        axis_text = axis_text[1:]
+    if axis_text not in {"x", "y", "z"}:
+        raise ValueError(f"Invalid transition command axis: {axis_value!r}")
+    return axis_text, sign
+
+
+def _optional_positive_int(value, *, default: int | None = None, name: str) -> int | None:
+    if value is None:
+        return default
+    result = int(value)
+    if result <= 0:
+        raise ValueError(f"{name} must be positive")
+    return result
+
+
+def _compact_number(value: float) -> int | float:
+    value = float(value)
+    return int(value) if value.is_integer() else value
+
+
+def _normalize_transition_command(command: dict) -> dict | None:
+    if not isinstance(command, dict):
+        raise ValueError(f"Transition command must be an object, got {type(command).__name__}")
+    op = str(command.get("op", command.get("action", ""))).strip().lower()
+    op = op.replace("-", "_").replace(" ", "_")
+
+    if op in {"restore", "restore_target", "restore_target_state", "target_restore"}:
+        return None
+
+    if op in {"open_gripper", "release_gripper", "free_gripper"}:
+        normalized = {"op": "open_gripper"}
+        delay = _optional_positive_int(command.get("delay"), default=None, name="delay")
+        if delay is not None:
+            normalized["delay"] = delay
+        return normalized
+
+    if op in {"close_gripper", "grasp"}:
+        normalized = {"op": "close_gripper"}
+        delay = _optional_positive_int(command.get("delay"), default=None, name="delay")
+        if delay is not None:
+            normalized["delay"] = delay
+        return normalized
+
+    if op in {"set_gripper", "gripper"}:
+        if "value" not in command:
+            raise ValueError("set_gripper command requires value")
+        value = float(command["value"])
+        if not np.isfinite(value) or value < 0.0 or value > 255.0:
+            raise ValueError(f"Invalid gripper value: {value}")
+        normalized = {"op": "set_gripper", "value": _compact_number(value)}
+        delay = _optional_positive_int(command.get("delay"), default=None, name="delay")
+        if delay is not None:
+            normalized["delay"] = delay
+        return normalized
+
+    if op in {"translate", "translate_ee", "move", "move_ee"}:
+        axis, sign = _axis_and_sign(command.get("axis", command.get("direction", "")))
+        if "distance_m" in command:
+            distance_m = float(command["distance_m"])
+        elif "distance_cm" in command:
+            distance_m = float(command["distance_cm"]) / 100.0
+        elif "distance" in command:
+            distance_m = float(command["distance"])
+        else:
+            raise ValueError("translate command requires distance_m")
+        distance_m *= sign
+        if not np.isfinite(distance_m) or abs(distance_m) > 0.25:
+            raise ValueError(f"Invalid translate distance_m: {distance_m}")
+        normalized = {"op": "translate", "axis": axis, "distance_m": _compact_number(distance_m)}
+        steps = _optional_positive_int(command.get("steps"), default=None, name="steps")
+        if steps is not None:
+            normalized["steps"] = steps
+        return normalized
+
+    if op in {"rotate", "rotate_ee"}:
+        axis, sign = _axis_and_sign(command.get("axis", ""))
+        if "angle_deg" in command:
+            angle_deg = float(command["angle_deg"])
+        elif "angle" in command:
+            angle_deg = float(command["angle"])
+        else:
+            raise ValueError("rotate command requires angle_deg")
+        angle_deg *= sign
+        if not np.isfinite(angle_deg) or abs(angle_deg) > 180.0:
+            raise ValueError(f"Invalid rotate angle_deg: {angle_deg}")
+        normalized = {"op": "rotate", "axis": axis, "angle_deg": _compact_number(angle_deg)}
+        steps = _optional_positive_int(command.get("steps"), default=None, name="steps")
+        if steps is not None:
+            normalized["steps"] = steps
+        return normalized
+
+    if op in {"wait", "hold"}:
+        steps = _optional_positive_int(command.get("steps", command.get("delay")), default=None, name="steps")
+        if steps is None:
+            raise ValueError("wait command requires steps")
+        return {"op": "wait", "steps": steps}
+
+    raise ValueError(f"Unsupported transition command op: {op!r}")
+
+
+def _normalize_transition_commands(commands: list) -> list[dict]:
+    if not isinstance(commands, list):
+        raise ValueError("Transition commands must be a list")
+    normalized = []
+    for command in commands:
+        normalized_command = _normalize_transition_command(command)
+        if normalized_command is not None:
+            normalized.append(normalized_command)
+    if not normalized:
+        raise ValueError("Transition commands are empty after removing host-handled restore commands")
+    return normalized
+
+
+def _commands_from_plan_steps(plan_steps: list[str]) -> list[dict]:
+    commands = []
+    for raw_step in plan_steps:
+        step = str(raw_step).strip().lower()
+        if not step:
+            continue
+        if any(token in step for token in ("open gripper", "release gripper", "free gripper", "gripper free")):
+            commands.append({"op": "open_gripper"})
+            continue
+        if "close gripper" in step:
+            commands.append({"op": "close_gripper"})
+            continue
+
+        move_match = re.search(
+            r"(?:move|translate).*?(?P<value>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>cm|m).*?(?P<axis>[+\-]?[xyz])(?:\b|-axis)",
+            step,
+        )
+        if move_match is None:
+            move_match = re.search(
+                r"(?:move|translate).*?(?P<axis>[+\-][xyz]|\b[xyz]\b)(?:\b|-axis)",
+                step,
+            )
+        if move_match:
+            value_text = move_match.groupdict().get("value")
+            unit = move_match.groupdict().get("unit") or "m"
+            distance_m = 0.05 if value_text is None else float(value_text)
+            if unit == "cm":
+                distance_m /= 100.0
+            axis, sign = _axis_and_sign(move_match.group("axis"))
+            commands.append({"op": "translate", "axis": axis, "distance_m": distance_m * sign})
+            continue
+
+        rotate_match = re.search(
+            r"rotate.*?(?P<value>[+\-]?[0-9]+(?:\.[0-9]+)?)\s*(?:degrees?|deg).*?(?:around|about)\s*(?P<axis>[+\-]?[xyz])(?:\b|-axis)",
+            step,
+        )
+        if rotate_match:
+            axis, sign = _axis_and_sign(rotate_match.group("axis"))
+            commands.append(
+                {
+                    "op": "rotate",
+                    "axis": axis,
+                    "angle_deg": float(rotate_match.group("value")) * sign,
+                }
+            )
+    return _normalize_transition_commands(commands)
+
+
+def _commands_from_plan_obj(plan_obj: dict) -> list[dict]:
+    commands = plan_obj.get("commands")
+    if commands is not None:
+        return _normalize_transition_commands(commands)
+    plan_steps = plan_obj.get("plan_steps", [])
+    if not isinstance(plan_steps, list) or len(plan_steps) == 0:
+        raise ValueError("Stage-1 planning output missing non-empty commands")
+    return _commands_from_plan_steps(plan_steps)
+
+
+def _commands_to_execute_body(commands: list[dict]) -> str:
+    normalized = _normalize_transition_commands(commands)
+    commands_literal = json.dumps(normalized, ensure_ascii=False)
+    return f"self.execute_transition_commands({commands_literal})"
+
+
+def _build_plan_multimodal_content(
+    prompt_text: str,
+    front_image_data_url: str,
+    side_image_data_url: str,
+    target_front_image_data_url: str | None = None,
+) -> list[dict]:
+    content = [
+        {"type": "input_text", "text": prompt_text},
+        {"type": "input_image", "image_url": front_image_data_url},
+        {"type": "input_image", "image_url": side_image_data_url},
+    ]
+    if target_front_image_data_url is not None:
+        content.append({"type": "input_image", "image_url": target_front_image_data_url})
+    return content
+
+
+def _normalize_ee_workspace_bounds(bounds: dict | None) -> dict | None:
+    if not isinstance(bounds, dict):
+        return None
+
+    current = _rounded_float_vector(bounds.get("current_position_world"), digits=4)
+    min_world = _rounded_float_vector(bounds.get("min_world"), digits=4)
+    max_world = _rounded_float_vector(bounds.get("max_world"), digits=4)
+    if current is None or min_world is None or max_world is None:
+        return None
+
+    min_arr = np.asarray(min_world, dtype=np.float64)
+    max_arr = np.asarray(max_world, dtype=np.float64)
+    current_arr = np.asarray(current, dtype=np.float64)
+    if np.any(min_arr > max_arr):
+        return None
+
+    normalized = {
+        "current_position_world": current_arr.tolist(),
+        "min_world": min_arr.tolist(),
+        "max_world": max_arr.tolist(),
+    }
+    if bounds.get("margin_m") is not None:
+        try:
+            normalized["margin_m"] = round(float(bounds["margin_m"]), 4)
+        except Exception:
+            pass
+    if bounds.get("source"):
+        normalized["source"] = str(bounds["source"])
+    return normalized
+
+
+def _format_ee_workspace_bounds_for_prompt(bounds: dict | None) -> str:
+    normalized = _normalize_ee_workspace_bounds(bounds)
+    if normalized is None:
+        return "No conservative EE workspace boundary is available."
+    return (
+        "Conservative EE workspace boundary for /ur:2f85:pinch in world coordinates:\n"
+        f"{json.dumps(normalized, ensure_ascii=False)}\n"
+        "Constraint: starting from current_position_world, the cumulative translate commands in this plan "
+        "must keep the EE position inside min_world/max_world on every axis."
+    )
+
+
+def _format_ee_reachability_for_prompt(enabled: bool) -> str:
+    if not enabled:
+        return "No deterministic EE reachability checker is available."
+    return (
+        "A deterministic local verifier will compute the maximum IK-reachable distance for each "
+        "translate command along its requested axis/direction from the cumulative EE pose. "
+        "Do not use recovery behavior. If verifier feedback reports max_reachable_distance_m, "
+        "regenerate the command sequence so the corresponding translate distance is within that "
+        "reported limit, or choose another axis/order."
+    )
+
+
+def _verify_commands_with_ee_workspace_bounds(commands: list[dict], bounds: dict | None) -> dict:
+    normalized = _normalize_ee_workspace_bounds(bounds)
+    if normalized is None:
+        return {"passed": True, "issues": [], "bad_command_indices": [], "revision_instructions": []}
+
+    pos = np.asarray(normalized["current_position_world"], dtype=np.float64)
+    min_world = np.asarray(normalized["min_world"], dtype=np.float64)
+    max_world = np.asarray(normalized["max_world"], dtype=np.float64)
+    axis_to_index = {"x": 0, "y": 1, "z": 2}
+    issues = []
+    bad_indices = []
+
+    for command_index, command in enumerate(commands):
+        if command.get("op") != "translate":
+            continue
+        axis = str(command.get("axis", "")).lower()
+        if axis not in axis_to_index:
+            continue
+        next_pos = pos.copy()
+        next_pos[axis_to_index[axis]] += float(command.get("distance_m", 0.0))
+        if np.any(next_pos < min_world) or np.any(next_pos > max_world):
+            issues.append(
+                {
+                    "command_index": command_index,
+                    "problem": (
+                        "Cumulative translate commands move EE outside conservative EE workspace: "
+                        f"next_position_world={_rounded_float_vector(next_pos)}, "
+                        f"min_world={normalized['min_world']}, max_world={normalized['max_world']}."
+                    ),
+                    "required_fix": (
+                        "Regenerate the translate sequence so every cumulative EE position remains inside "
+                        "the conservative EE workspace boundary."
+                    ),
+                }
+            )
+            bad_indices.append(command_index)
+        pos = next_pos
+
+    return {
+        "passed": len(issues) == 0,
+        "issues": issues,
+        "bad_command_indices": bad_indices,
+        "revision_instructions": [
+            "Keep cumulative translate commands inside the conservative EE workspace boundary."
+        ] if issues else [],
+    }
+
+
+def _merge_plan_verifications(*verifications: dict) -> dict:
+    issues = []
+    bad_indices = set()
+    revision_instructions = []
+    for verification in verifications:
+        if not isinstance(verification, dict):
+            continue
+        issues.extend(verification.get("issues", []) or [])
+        for index in verification.get("bad_command_indices", []) or []:
+            try:
+                bad_indices.add(int(index))
+            except Exception:
+                continue
+        revision_instructions.extend(verification.get("revision_instructions", []) or [])
+    return {
+        "passed": len(issues) == 0 and len(bad_indices) == 0,
+        "issues": issues,
+        "bad_command_indices": sorted(bad_indices),
+        "revision_instructions": [str(item) for item in revision_instructions if str(item).strip()],
+    }
+
+
+def _is_known_invalid_plan_verification_issue(issue: dict) -> bool:
+    problem = str(issue.get("problem", "")).lower()
+    required_fix = str(issue.get("required_fix", "")).lower()
+    combined = f"{problem} {required_fix}"
+
+    gripper_semantics_wrong = (
+        "final_target_gripper" in combined
+        and (
+            "0.0 implies closed" in combined
+            or "0 implies closed" in combined
+            or "1.0 (open)" in combined
+            or "1.0 open" in combined
+            or "normalized 0/1" in combined
+        )
+    )
+    if gripper_semantics_wrong:
+        return True
+
+    restore_target_misread = (
+        ("final_target_qpos" in combined or "final_target_gripper" in combined)
+        and any(token in combined for token in ("cumulative motion", "last transition command", "final state after"))
+    )
+    return restore_target_misread
+
+
+def _is_known_invalid_plan_revision_instruction(instruction: str) -> bool:
+    text = str(instruction).lower()
+    if "final_target_gripper" in text and ("1.0 (open)" in text or "1.0 open" in text):
+        return True
+    if ("final_target_qpos" in text or "final_target_gripper" in text) and "cumulative motion" in text:
+        return True
+    return False
+
+
+def _is_plan_constraint_verification_issue(issue: dict) -> bool:
+    problem = str(issue.get("problem", "")).lower()
+    required_fix = str(issue.get("required_fix", "")).lower()
+    combined = f"{problem} {required_fix}"
+
+    numeric_or_schema_tokens = (
+        "distance_m",
+        "0.25",
+        "25cm",
+        "25 cm",
+        "angle_deg",
+        "180",
+        "axis",
+        "x/y/z",
+        "steps",
+        "delay",
+        "positive",
+        "allowed command",
+        "unsupported",
+        "schema",
+        "invalid op",
+        "command op",
+        '"op"',
+        "'op'",
+        "required field",
+        "missing",
+        "invalid",
+        "not a list",
+        "empty",
+        "numeric",
+        "number",
+        "float",
+        "type",
+        "range",
+        "workspace",
+        "boundary",
+        "out of bounds",
+        "outside",
+        "reachable",
+        "reachability",
+        "unreachable",
+        "max_reachable_distance_m",
+        "0..255",
+        "0-255",
+        "255",
+    )
+    restore_target_type_check = (
+        ("final_target_qpos" in combined or "final_target_gripper" in combined)
+        and any(token in combined for token in ("missing", "invalid", "list", "numeric", "number", "float", "type"))
+    )
+    plan_steps_check = "plan_steps" in combined and any(
+        token in combined for token in ("match", "order", "missing", "invalid", "not a list", "empty")
+    )
+    return restore_target_type_check or plan_steps_check or any(token in combined for token in numeric_or_schema_tokens)
+
+
+def _is_plan_constraint_revision_instruction(instruction: str) -> bool:
+    text = str(instruction).lower()
+    numeric_or_schema_tokens = (
+        "distance_m",
+        "0.25",
+        "25cm",
+        "25 cm",
+        "angle_deg",
+        "180",
+        "axis",
+        "steps",
+        "delay",
+        "allowed command",
+        "unsupported",
+        "schema",
+        "invalid op",
+        "command op",
+        '"op"',
+        "'op'",
+        "required field",
+        "missing",
+        "invalid",
+        "numeric",
+        "range",
+        "workspace",
+        "boundary",
+        "out of bounds",
+        "outside",
+        "reachable",
+        "reachability",
+        "unreachable",
+        "max_reachable_distance_m",
+        "0..255",
+        "0-255",
+        "255",
+    )
+    restore_target_type_check = (
+        ("final_target_qpos" in text or "final_target_gripper" in text)
+        and any(token in text for token in ("missing", "invalid", "list", "numeric", "number", "float", "type"))
+    )
+    plan_steps_check = "plan_steps" in text and any(
+        token in text for token in ("match", "order", "missing", "invalid", "not a list", "empty")
+    )
+    return restore_target_type_check or plan_steps_check or any(token in text for token in numeric_or_schema_tokens)
+
+
+def _normalize_plan_verification_result(result: dict, command_count: int) -> dict:
+    if not isinstance(result, dict):
+        raise ValueError("Plan verifier output must be a JSON object")
+
+    issues = result.get("issues", [])
+    if issues is None:
+        issues = []
+    if not isinstance(issues, list):
+        raise ValueError("Plan verifier output field 'issues' must be a list")
+
+    normalized_issues = []
+    bad_indices = set()
+    ignored_bad_indices = set()
+    filtered_known_invalid_issue = False
+    for issue in issues:
+        if not isinstance(issue, dict):
+            issue = {"command_index": None, "problem": str(issue), "required_fix": ""}
+        if _is_known_invalid_plan_verification_issue(issue) or not _is_plan_constraint_verification_issue(issue):
+            filtered_known_invalid_issue = True
+            try:
+                ignored_bad_indices.add(int(issue.get("command_index")))
+            except Exception:
+                pass
+            continue
+        raw_index = issue.get("command_index")
+        command_index = None
+        if raw_index is not None:
+            try:
+                command_index = int(raw_index)
+            except Exception:
+                command_index = None
+            if command_index is not None and 0 <= command_index < command_count:
+                bad_indices.add(command_index)
+        normalized_issues.append(
+            {
+                "command_index": command_index,
+                "problem": str(issue.get("problem", "")).strip(),
+                "required_fix": str(issue.get("required_fix", "")).strip(),
+            }
+        )
+
+    for raw_index in result.get("bad_command_indices", []) or []:
+        try:
+            command_index = int(raw_index)
+        except Exception:
+            continue
+        if command_index in ignored_bad_indices:
+            continue
+        if 0 <= command_index < command_count:
+            bad_indices.add(command_index)
+
+    revision_instructions = result.get("revision_instructions", [])
+    if revision_instructions is None:
+        revision_instructions = []
+    if not isinstance(revision_instructions, list):
+        revision_instructions = [str(revision_instructions)]
+    revision_instructions = [
+        str(item).strip()
+        for item in revision_instructions
+        if (
+            str(item).strip()
+            and not _is_known_invalid_plan_revision_instruction(str(item))
+            and _is_plan_constraint_revision_instruction(str(item))
+        )
+    ]
+
+    passed = bool(result.get("passed", False))
+    if normalized_issues or bad_indices:
+        passed = False
+    elif filtered_known_invalid_issue:
+        passed = True
+
+    return {
+        "passed": passed,
+        "issues": normalized_issues,
+        "bad_command_indices": sorted(bad_indices),
+        "revision_instructions": revision_instructions,
+    }
+
+
+def _local_plan_verification_failure(error: Exception) -> dict:
+    return {
+        "passed": False,
+        "issues": [
+            {
+                "command_index": None,
+                "problem": f"Local command validation failed: {error}",
+                "required_fix": (
+                    "Regenerate a complete plan whose commands follow the allowed schema, "
+                    "single translate abs(distance_m) <= 0.25, and single rotate abs(angle_deg) <= 180."
+                ),
+            }
+        ],
+        "bad_command_indices": [],
+        "revision_instructions": ["Regenerate the complete plan with only valid transition commands."],
+    }
+
+
+def _build_plan_verification_prompt(
+    *,
+    task_prompt: str,
+    planning_prompt: str,
+    plan_obj: dict,
+    commands: list[dict],
+    ee_workspace_bounds: dict | None = None,
+) -> str:
+    plan_payload = dict(plan_obj)
+    plan_payload["commands"] = commands
+    workspace_text = _format_ee_workspace_bounds_for_prompt(ee_workspace_bounds)
+    return f"""You are a robot transition plan constraint-only checker.
+
+Task prompt:
+{task_prompt}
+
+Verifier task:
+Check only whether the proposed transition plan satisfies the hard planning-agent constraints and command limits. Do not judge whether an action choice is reasonable, useful, optimal, safe, or task-appropriate.
+
+Original planning prompt:
+{planning_prompt}
+
+{workspace_text}
+
+Verification rules:
+1. Check command schema only: commands must be a list of allowed ops with required fields.
+2. Allowed command ops are: open_gripper, close_gripper, set_gripper, translate, rotate, wait, restore_target_state.
+3. Verify plan_steps match the executable commands in order.
+4. Verify translate commands use x/y/z and abs(distance_m) <= 0.25.
+5. Verify rotate commands use x/y/z and abs(angle_deg) <= 180.
+6. Verify steps/delay values, when present, are positive integers.
+7. Verify set_gripper values, when present, are numeric and in range 0..255.
+8. Gripper actuator semantics in this simulator: 0 means fully open, 255 means fully closed. It is not a normalized 0/1 flag. open_gripper maps to value 0; close_gripper maps to value 255.
+9. If a conservative EE workspace boundary is provided, verify cumulative translate commands keep the EE inside min_world/max_world.
+10. final_target_qpos and final_target_gripper are host restore targets for the next task's retrieved initial state. They are not produced by integrating transition commands and must not be forced to match the last transition command.
+11. Do not reject a plan merely because final_target_qpos/final_target_gripper differ from the cumulative transition-command endpoint.
+12. Do not reject a plan because a gripper action seems unsafe, unnecessary, or semantically questionable.
+13. Do not reject a plan because a movement direction, approach, lift, retract, grasp, or release seems unreasonable.
+14. If a hard constraint is violated, identify the corresponding zero-based command_index whenever possible.
+15. Do not rewrite the plan. Only report whether it passes and what hard constraint the planning agent must fix.
+
+Return strictly one JSON object:
+{{
+  "passed": true,
+  "issues": [
+    {{"command_index": 1, "problem": "short reason", "required_fix": "specific fix"}}
+  ],
+  "bad_command_indices": [1],
+  "revision_instructions": ["specific instruction for the planner"]
+}}
+
+Plan JSON to verify:
+{json.dumps(plan_payload, ensure_ascii=False, indent=2)}"""
+
+
+def _request_plan_verification(
+    *,
+    client: OpenAI,
+    model_name: str,
+    planning_prompt: str,
+    task_prompt: str,
+    plan_obj: dict,
+    commands: list[dict],
+    ee_workspace_bounds: dict | None,
+    front_image_data_url: str,
+    side_image_data_url: str,
+    target_front_image_data_url: str | None,
+    request_json_object: Callable[..., dict],
+    max_attempts: int = 3,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    backend_mode: str = "auto",
+    thinking_mode: str = "auto",
+) -> dict:
+    verifier_prompt = _build_plan_verification_prompt(
+        task_prompt=task_prompt,
+        planning_prompt=planning_prompt,
+        plan_obj=plan_obj,
+        commands=commands,
+        ee_workspace_bounds=ee_workspace_bounds,
+    )
+    verifier_obj = request_json_object(
+        client=client,
+        model_name=model_name,
+        request_input=[{
+            "role": "user",
+            "content": _build_plan_multimodal_content(
+                verifier_prompt,
+                front_image_data_url,
+                side_image_data_url,
+                target_front_image_data_url,
+            ),
+        }],
+        stage_name="stage-1.5-plan-verifier",
+        max_attempts=max_attempts,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        backend_mode=backend_mode,
+        thinking_mode=thinking_mode,
+    )
+    return _normalize_plan_verification_result(verifier_obj, len(commands))
+
+
+def _summarize_plan_verification_issues(verification: dict) -> str:
+    parts = []
+    for issue in verification.get("issues", []):
+        parts.append(
+            "command_index={idx}; problem={problem}; required_fix={fix}".format(
+                idx=issue.get("command_index"),
+                problem=issue.get("problem", ""),
+                fix=issue.get("required_fix", ""),
+            )
+        )
+    for instruction in verification.get("revision_instructions", []):
+        parts.append(f"instruction={instruction}")
+    return " | ".join(parts) if parts else "Verifier rejected the plan without detailed issues."
+
+
+def _format_plan_revision_feedback(plan_obj: dict, commands: list[dict], verification: dict) -> str:
+    plan_steps = plan_obj.get("plan_steps", [])
+    if not isinstance(plan_steps, list):
+        plan_steps = []
+
+    lines = [
+        "Previous verifier feedback:",
+        "The previous plan failed verification. Regenerate a complete corrected plan, not a patch.",
+    ]
+    for issue in verification.get("issues", []):
+        command_index = issue.get("command_index")
+        command_text = None
+        step_text = None
+        if isinstance(command_index, int) and 0 <= command_index < len(commands):
+            command_text = json.dumps(commands[command_index], ensure_ascii=False)
+        if isinstance(command_index, int) and 0 <= command_index < len(plan_steps):
+            step_text = str(plan_steps[command_index])
+        lines.append(
+            "- command_index={idx}; command={command}; plan_step={step}; problem={problem}; required_fix={fix}".format(
+                idx=command_index,
+                command=command_text,
+                step=step_text,
+                problem=issue.get("problem", ""),
+                fix=issue.get("required_fix", ""),
+            )
+        )
+
+    for instruction in verification.get("revision_instructions", []):
+        lines.append(f"- revision_instruction={instruction}")
+    return "\n".join(lines)
+
+
+def _generate_verified_transition_plan(
+    *,
+    client: OpenAI,
+    model_name: str,
+    planning_prompt: str,
+    task_prompt: str,
+    front_image_data_url: str,
+    side_image_data_url: str,
+    target_front_image_data_url: str | None,
+    ee_workspace_bounds: dict | None = None,
+    ee_reachability_checker: Callable[[list[dict]], dict] | None = None,
+    max_plan_revisions: int = 2,
+    request_json_object: Callable[..., dict] = _request_json_object,
+    max_attempts: int = 3,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    backend_mode: str = "auto",
+    thinking_mode: str = "auto",
+    write_logs: bool = False,
+) -> tuple[dict, list[dict], dict]:
+    max_plan_revisions = max(0, int(max_plan_revisions))
+    feedback_text = ""
+    last_verification = None
+
+    for revision_index in range(max_plan_revisions + 1):
+        effective_planning_prompt = planning_prompt
+        if feedback_text:
+            effective_planning_prompt = f"{planning_prompt}\n\n{feedback_text}"
+
+        print(
+            f"🚀 Stage 1: Generating path planning list using {model_name} "
+            f"(attempt {revision_index + 1}/{max_plan_revisions + 1})..."
+        )
+        plan_obj = request_json_object(
+            client=client,
+            model_name=model_name,
+            request_input=[{
+                "role": "user",
+                "content": _build_plan_multimodal_content(
+                    effective_planning_prompt,
+                    front_image_data_url,
+                    side_image_data_url,
+                    target_front_image_data_url,
+                ),
+            }],
+            stage_name="stage-1-planning",
+            max_attempts=max_attempts,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            backend_mode=backend_mode,
+            thinking_mode=thinking_mode,
+        )
+
+        try:
+            transition_commands = _commands_from_plan_obj(plan_obj)
+            plan_obj["commands"] = transition_commands
+            if ee_reachability_checker is not None:
+                local_motion_verification = ee_reachability_checker(transition_commands)
+            else:
+                local_motion_verification = _verify_commands_with_ee_workspace_bounds(
+                    transition_commands,
+                    ee_workspace_bounds,
+                )
+            llm_verification = _request_plan_verification(
+                client=client,
+                model_name=model_name,
+                planning_prompt=planning_prompt,
+                task_prompt=task_prompt,
+                plan_obj=plan_obj,
+                commands=transition_commands,
+                ee_workspace_bounds=ee_workspace_bounds,
+                front_image_data_url=front_image_data_url,
+                side_image_data_url=side_image_data_url,
+                target_front_image_data_url=target_front_image_data_url,
+                request_json_object=request_json_object,
+                max_attempts=max_attempts,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                backend_mode=backend_mode,
+                thinking_mode=thinking_mode,
+            )
+            verification = _merge_plan_verifications(local_motion_verification, llm_verification)
+        except Exception as e:
+            transition_commands = []
+            verification = _local_plan_verification_failure(e)
+
+        last_verification = verification
+        if write_logs:
+            _write_json(f"logs/transition_plan_attempt_{revision_index + 1}.json", plan_obj)
+            _write_json(f"logs/transition_plan_verification_{revision_index + 1}.json", verification)
+
+        if verification.get("passed"):
+            print("✅ Stage 1.5: plan verifier passed.")
+            return plan_obj, transition_commands, verification
+
+        print(f"❌ Stage 1.5: plan verifier failed: {_summarize_plan_verification_issues(verification)}")
+        if revision_index >= max_plan_revisions:
+            label = "revision" if max_plan_revisions == 1 else "revisions"
+            raise ValueError(
+                f"Plan verification failed after {max_plan_revisions} {label}: "
+                f"{_summarize_plan_verification_issues(verification)}"
+            )
+        feedback_text = _format_plan_revision_feedback(plan_obj, transition_commands, verification)
+
+    raise ValueError(
+        "Plan verification failed unexpectedly: "
+        f"{_summarize_plan_verification_issues(last_verification or {})}"
+    )
 
 
 def _collect_execute_allowed_apis(template_code: str) -> list[str]:
@@ -1460,10 +2329,14 @@ def transition_code_generation(
     task_prompt: str,
     no_planning: bool = False,
     no_interpolation: bool = False,
+    no_retrieval: bool = False,
     llm_config: dict | None = None,
     target_top_k: int = 3,
     qpos_path_validator: Callable[..., bool | dict] | None = None,
     max_transition_regeneration_attempts: int = 1,
+    target_ee_position_resolver: Callable[[np.ndarray], Any] | None = None,
+    ee_workspace_bounds: dict | None = None,
+    ee_reachability_checker: Callable[[list[dict]], dict] | None = None,
 ):
     llm_config = llm_config or {}
 
@@ -1512,6 +2385,14 @@ def transition_code_generation(
     thinking_mode = _normalize_thinking_mode(str(_pick_config("thinking", "LLM_THINKING", "auto")))
     image_max_side = _to_optional_int(_pick_config("image_max_side", "LLM_IMAGE_MAX_SIDE", 768), "image_max_side")
     image_quality = _to_optional_int(_pick_config("image_quality", "LLM_IMAGE_QUALITY", 80), "image_quality")
+    max_plan_verification_revisions = _to_optional_int(
+        _pick_config("max_plan_verification_revisions", "LLM_PLAN_VERIFICATION_REVISIONS", 2),
+        "max_plan_verification_revisions",
+    )
+    if max_plan_verification_revisions is None:
+        max_plan_verification_revisions = 2
+    if max_plan_verification_revisions < 0:
+        raise ValueError("max_plan_verification_revisions must be >= 0")
     local_retrieval_first = _to_bool(
         _pick_config("local_retrieval_first", "LLM_LOCAL_RETRIEVAL_FIRST", False),
         "local_retrieval_first",
@@ -1542,35 +2423,49 @@ def transition_code_generation(
     client = OpenAI(**client_kwargs)
 
     current_joint_pos_arr = np.asarray(np.load('logs/current_joint.npy'), dtype=np.float64).reshape(-1)
-    def retrieve_once(_attempt_index: int):
-        return retrieve_target_qpos_with_agent(
-            client,
-            model_name,
-            task_prompt,
-            current_joint_pos_arr,
-            max_attempts=max_attempts,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            backend_mode=effective_backend_mode,
-            thinking_mode=thinking_mode,
-            top_k=target_top_k,
-            path_validator=None,
-            local_retrieval_first=local_retrieval_first,
-            local_retrieval_cutoff=local_retrieval_cutoff or 0.72,
-            return_selection=True,
-        )
+    if no_retrieval:
+        target_joint_pos_arr = current_joint_pos_arr.copy()
+        target_retrieval_payload = {
+            "requested_task_prompt": task_prompt,
+            "matched_task_prompt": None,
+            "retrieval_source": "disabled",
+            "target_qpos_candidates": [],
+            "target_front_image_paths": [],
+        }
+        target_qpos_candidates = []
+        target_front_image_paths = []
+    else:
+        def retrieve_once(_attempt_index: int):
+            return retrieve_target_qpos_with_agent(
+                client,
+                model_name,
+                task_prompt,
+                current_joint_pos_arr,
+                max_attempts=max_attempts,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                backend_mode=effective_backend_mode,
+                thinking_mode=thinking_mode,
+                top_k=target_top_k,
+                path_validator=None,
+                local_retrieval_first=local_retrieval_first,
+                local_retrieval_cutoff=local_retrieval_cutoff or 0.72,
+                return_selection=True,
+            )
 
-    target_joint_pos_arr, target_retrieval_payload = _retrieve_target_qpos_with_retry(
-        retrieve_once,
-        max_transition_regeneration_attempts=max_transition_regeneration_attempts,
-    )
-    target_qpos_candidates = target_retrieval_payload.get("target_qpos_candidates", [])
-    target_front_image_paths = target_retrieval_payload.get("target_front_image_paths", [])
+        target_joint_pos_arr, target_retrieval_payload = _retrieve_target_qpos_with_retry(
+            retrieve_once,
+            max_transition_regeneration_attempts=max_transition_regeneration_attempts,
+        )
+        target_qpos_candidates = target_retrieval_payload.get("target_qpos_candidates", [])
+        target_front_image_paths = target_retrieval_payload.get("target_front_image_paths", [])
     target_joint_pos = str(target_joint_pos_arr.tolist())
     target_arm_qpos = target_joint_pos_arr[:6].tolist()
-    target_gripper_state = float(target_joint_pos_arr[-1]) if target_joint_pos_arr.size > 6 else None
+    target_gripper_state = None if no_retrieval else (
+        float(target_joint_pos_arr[-1]) if target_joint_pos_arr.size > 6 else None
+    )
     current_joint_pos = str(current_joint_pos_arr.tolist())
     template_code = read_file('scripts/autobio_scripts/transition_template.py')
     allowed_apis = _collect_execute_allowed_apis(template_code)
@@ -1578,8 +2473,39 @@ def transition_code_generation(
     side_image_data_url = None
     target_front_image_data_url = None
     calibration_payload = _load_calibration_payload()
+    if calibration_payload is not None and not no_retrieval:
+        target_ee_payload = _target_end_effector_payload_from_resolver(
+            target_joint_pos_arr,
+            target_ee_position_resolver,
+            site_name=(calibration_payload.get("end_effector") or {}).get("site_name"),
+        )
+        if target_ee_payload is not None:
+            calibration_payload = dict(calibration_payload)
+            calibration_payload["target_end_effector"] = target_ee_payload
+            _write_json("logs/transition_calibration.json", calibration_payload)
     calibration_prompt_text = format_calibration_for_llm(calibration_payload) if calibration_payload else ""
     spatial_context_prompt_text = ""
+    reachability_prompt_text = _format_ee_reachability_for_prompt(ee_reachability_checker is not None)
+    normalized_ee_workspace_bounds = (
+        None if ee_reachability_checker is not None else _normalize_ee_workspace_bounds(ee_workspace_bounds)
+    )
+    ee_workspace_prompt_text = _format_ee_workspace_bounds_for_prompt(normalized_ee_workspace_bounds)
+    if normalized_ee_workspace_bounds is not None:
+        _write_json("logs/transition_ee_workspace_bounds.json", normalized_ee_workspace_bounds)
+    if ee_reachability_checker is not None:
+        motion_constraint_rule = (
+            "If the deterministic EE reachability verifier is available, each translate command must be "
+            "IK-reachable from the cumulative EE pose along its requested axis/direction. Do not use recovery "
+            "behavior. If verifier feedback reports max_reachable_distance_m for a command, regenerate that "
+            "command with abs(distance_m) <= max_reachable_distance_m or choose another axis/order."
+        )
+    elif normalized_ee_workspace_bounds is not None:
+        motion_constraint_rule = (
+            "Starting from current_position_world in the conservative EE movement boundary, cumulative "
+            "translate commands must keep the EE inside min_world/max_world on every axis."
+        )
+    else:
+        motion_constraint_rule = "No local EE reachability or workspace boundary constraint is available."
     if not no_planning:
         front_image_path = _resolve_first_existing_path(
             ["current_front_calibrated.png", "current_view.png"],
@@ -1674,6 +2600,22 @@ Rules:
             except Exception as e:
                 print(f"[Calibration] stage-0 obstacle perception failed: {_sanitize_error_text(e)}")
 
+    target_reference_text = (
+        "the target task's retrieved initial front-view image, aligned with the retrieved target state candidates."
+        if not no_retrieval
+        else "unavailable. No retrieved target qpos or target initial image is provided in this no-retrieval ablation."
+    )
+    target_binding_text = (
+        "The third image, when present, is the TARGET INITIAL FRONT reference view."
+        if not no_retrieval
+        else "The TARGET INITIAL FRONT reference view is unavailable; plan only from the current views and target prompt."
+    )
+    final_target_instruction = (
+        f'"final_target_qpos": {target_arm_qpos},\n    "final_target_gripper": {target_gripper_state}'
+        if not no_retrieval
+        else f'"final_target_qpos": {target_arm_qpos},\n    "final_target_gripper": null'
+    )
+
     planning_prompt = f'''
 You are a robot transition planner.
 
@@ -1681,23 +2623,26 @@ Task:
 Generate a concise path-planning list for transition execution, not code.
 
 Inputs:
-front camera image: front-to-back is x-axis, left-to-right is y-axis, and up-and-down is z-axis.
-left camera image: use this as complementary geometric evidence for occlusions, depth relation, and side clearance.
-target front reference image: the target task's retrieved initial front-view image, aligned with the retrieved target state candidates.
+front camera image: the current front camera image
+side camera image: the current side camera image
+target front reference image: {target_reference_text}
 
 Planning objective:
 - Safety-first, collision-avoidance.
-- Main sequence: obstacle clearance.
+- Main sequence: obstacle clearance, then target approach.
+- Approach target: after clearance, move the EE toward the target gripper world position using the calibrated target delta when available.
 
 Planning Rules:
-First, the current image is observed to analyze the states of the objects, the robotic arm, and the gripper within the scene. 
-Next, a determination is made as to whether the gripper requires releasing. (mostly should be freed) 
-Subsequently, the End-Effector (EE) is maneuvered away from all obstacles visible from any viewpoint through a combination of translational and rotational movements. 
+First, analyze the states of the objects, the robotic arm, and the gripper within the scene. 
+Next, a determination is made as to whether the gripper requires releasing. 
+Subsequently, the End-Effector (EE) is maneuvered away from all obstacles through a combination of translational and rotational movements.
+Finally, if target delta is available in Tool-derived spatial context, include translate commands that reduce the remaining x/y/z delta toward the target gripper position. 
+Do not stop after clearance unless the target delta is unavailable or unsafe.
 
 Image binding for this request:
 - The first image is the CURRENT FRONT view.
-- The second image is the CURRENT LEFT view.
-- The third image, when present, is the TARGET INITIAL FRONT reference view.
+- The second image is the CURRENT SIDE view.
+- {target_binding_text}
 - You must jointly reason over the current views and target reference before generating the plan.
 
 Calibrated camera geometry:
@@ -1706,8 +2651,20 @@ Calibrated camera geometry:
 Tool-derived spatial context:
 {spatial_context_prompt_text if spatial_context_prompt_text else "No VLM+calibration obstacle context is available for this transition."}
 
+Conservative EE movement boundary:
+{ee_workspace_prompt_text}
+
+EE reachability verifier:
+{reachability_prompt_text}
+
 Return strictly one JSON object with schema:
 {{
+    "commands": [
+        {{"op": "open_gripper", "delay": 100}},
+        {{"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 100}},
+        {{"op": "rotate", "axis": "z", "angle_deg": 30, "steps": 100}},
+        {{"op": "close_gripper", "delay": 100}}
+    ],
     "plan_steps": [
         "step 1: gripper free...",
         "step 2: move...",
@@ -1716,71 +2673,30 @@ Return strictly one JSON object with schema:
         "step n: move...",
     ],
     "safety_notes": ["...", "..."],
-    "final_target_qpos": {target_arm_qpos},
-    "final_target_gripper": {target_gripper_state}
+    {final_target_instruction}
 }}
 
 Rules:
-1. plan_steps must be ordered, actionable, and short.
-2. Each step should be a movement instruction for the robot, such as "move EE 10cm along +x", "rotate EE 90 degrees around z-axis", "open gripper", "close gripper", etc.
-3. Do not output code.
-4. Do not output markdown.
-'''
-
-    codegen_prompt_template = '''
-You are a professional Python programmer.
-
-Task:
-Please generate the corresponding instruction code based on the plan_steps defined in the plan JSON file.
-
-Planning list (must be followed):
-{plan_steps_json}
-
-Allowed APIs:
-1. get_site_pose(self, data: mujoco.MjData) -> Pose # get the current pose of the specified site, which can be the EE or any obstacle.
-2. interpolate(self, start: Pose, end: Pose, num_steps: int) -> list[Pose] # generate a list of linearly interpolated poses between start and end, with num_steps in total.
-3. path_follow(self, path: list[Pose]) # follow the given path by controlling the robot in a closed-loop manner. The path is generated by interpolate() and can be updated online by replanning.
-4. move_to(self, pose: Pose, num_steps: int = 100) # move the EE to the specified pose by interpolation. This is a simplified wrapper of interpolate() + path_follow() for direct point-to-point movement.
-5. gripper_control(self, value: float, delay: int = 300) # control the gripper to the specified value (0~250, where 0 is fully open and 250 is fully closed), and hold for delay steps.
-6. rotate_gripper(self, angle, axis, cur_quat) -> target_quat # rotate the gripper by the specified angle (in degrees) around the specified axis (x/y/z) from the current gripper orientation, and return the target gripper quaternion.
-
-Here is some reference code; you can use this style as a guide for your own implementation:
-```python
-# Gripper control example: (0~250) 0:open, 250:fully close
-# free the gripper
-self.gripper_control(0)
-
-# move to a safe place. make gripper away from objects.
-# X-axis translation example, from current EE pose
-cur_pose = self.get_site_pose(self.data)
-end_pose = Pose(pos=cur_pose.pos + (0.1, 0.0, 0.0), quat=cur_pose.quat)
-path = self.interpolate(cur_pose, end_pose, 100)
-self.path_follow(path)
-
-# Y-axis translation example, from current EE pose
-cur_pose = self.get_site_pose(self.data)
-end_pose = Pose(pos=cur_pose.pos + (0.0, 0.1, 0.0), quat=cur_pose.quat)
-path = self.interpolate(cur_pose, end_pose, 100)
-self.path_follow(path)
-
-# Z-axis translation example, from current EE pose
-cur_pose = self.get_site_pose(self.data)
-end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
-path = self.interpolate(cur_pose, end_pose, 100)
-self.path_follow(path)
-```
-
-Output rules:
-1. Do not output class/function definitions.
-2. Do not include markdown fences.
-3. Do not include this line (it will be inserted automatically): self.ik.initial_qpos = self.data.qpos[self.jnt_span]
-4. Do not generate final target restoration lines (`target_qpos`, `target_gripper`, `move_to_target_qpos`). They are inserted by host code.
-5. Do not invent persistent attributes such as `self.target_quat` or `self.target_pose`. Store intermediate values in local variables, for example `target_quat = self.rotate_gripper(...)`.
+1. commands is required and is the only executable transition representation.
+2. Allowed command ops are: open_gripper, close_gripper, set_gripper, translate, rotate, wait, restore_target_state.
+3. translate must use axis x/y/z and distance_m in meters; use negative distance_m for negative axis motion.
+   The absolute value of distance_m for every single translate command MUST be <= 0.25m.
+   If a longer translation is needed, split it into multiple translate commands, each with abs(distance_m) <= 0.25m.
+   Example: do not output {{"op": "translate", "axis": "x", "distance_m": -0.5}}; output two translate commands with distance_m -0.25 each.
+4. rotate must use axis x/y/z and angle_deg in degrees; use negative angle_deg for negative rotation.
+5. Keep every single translate distance absolute value <= 0.25m and every single rotation <= 180 degrees.
+6. {motion_constraint_rule}
+7. plan_steps are only human-readable comments matching commands.
+8. Do not output code.
+9. Do not output markdown.
 '''
     
     print("Next task prompt:", task_prompt)
     print("Current joint pos:", current_joint_pos)
-    print("Target joint pos:", target_joint_pos)
+    if no_retrieval:
+        print("Target joint pos: retrieval disabled (no-retrieval mode)")
+    else:
+        print("Target joint pos:", target_joint_pos)
 
     if no_planning:
         print("[Transition] no_planning=True: skipping planning and code generation, only applying target-qpos restore block.")
@@ -1789,7 +2705,7 @@ Output rules:
             execute_body_code="",
             final_target_qpos=target_arm_qpos,
             final_target_gripper=target_gripper_state,
-            include_final_restore=(not no_interpolation),
+            include_final_restore=(not no_interpolation and not no_retrieval),
             final_target_qpos_candidates=target_qpos_candidates,
             target_top_k=target_top_k,
         )
@@ -1801,22 +2717,17 @@ Output rules:
             return
         raise ValueError(f"Generated template code is invalid in no_planning mode: {validation_msg}")
 
-    print(f"🚀 Stage 1: Generating path planning list using {model_name}...")
-    planning_content = [
-        {"type": "input_text", "text": planning_prompt},
-        {"type": "input_image", "image_url": front_image_data_url},
-        {"type": "input_image", "image_url": side_image_data_url},
-    ]
-    if target_front_image_data_url is not None:
-        planning_content.append({"type": "input_image", "image_url": target_front_image_data_url})
-    plan_obj = _request_json_object(
+    plan_obj, transition_commands, plan_verification = _generate_verified_transition_plan(
         client=client,
         model_name=model_name,
-        request_input=[{
-            "role": "user",
-            "content": planning_content,
-        }],
-        stage_name="stage-1-planning",
+        planning_prompt=planning_prompt,
+        task_prompt=task_prompt,
+        front_image_data_url=front_image_data_url,
+        side_image_data_url=side_image_data_url,
+        target_front_image_data_url=target_front_image_data_url,
+        ee_workspace_bounds=normalized_ee_workspace_bounds,
+        ee_reachability_checker=ee_reachability_checker,
+        max_plan_revisions=max_plan_verification_revisions,
         max_attempts=max_attempts,
         temperature=temperature,
         top_p=top_p,
@@ -1824,10 +2735,11 @@ Output rules:
         timeout=timeout,
         backend_mode=effective_backend_mode,
         thinking_mode=thinking_mode,
+        write_logs=True,
     )
     plan_steps = plan_obj.get("plan_steps", [])
-    if not isinstance(plan_steps, list) or len(plan_steps) == 0:
-        raise ValueError("Stage-1 planning output missing non-empty plan_steps")
+    if plan_steps is not None and not isinstance(plan_steps, list):
+        raise ValueError("Stage-1 planning output has invalid plan_steps")
 
     plan_target_qpos = plan_obj.get("final_target_qpos", target_arm_qpos)
     if not isinstance(plan_target_qpos, list) or len(plan_target_qpos) == 0:
@@ -1849,38 +2761,16 @@ Output rules:
     with open(plan_out_path, "w", encoding="utf-8") as f:
         json.dump(plan_obj, f, ensure_ascii=False, indent=2)
     print(f"Saved transition plan to: {plan_out_path}")
+    _write_json("logs/transition_plan_verification.json", plan_verification)
 
-    print(f"🚀 Stage 2: Using {model_name} to generate execute instruction code based on the plan list...")
-    codegen_prompt = codegen_prompt_template.format(
-        plan_steps_json=json.dumps(plan_steps, ensure_ascii=False, indent=2),
-        allowed_apis_json=json.dumps(allowed_apis, ensure_ascii=False),
-    )
-    codegen_text = _request_text(
-        client=client,
-        model_name=model_name,
-        request_input=[
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": codegen_prompt}],
-            }
-        ],
-        stage_name="stage-2-codegen",
-        max_attempts=max_attempts,
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        backend_mode=effective_backend_mode,
-        thinking_mode=thinking_mode,
-    )
-
-    execute_body = _extract_code_from_response(codegen_text)
+    print("🚀 Stage 2: Compiling planner commands into transition primitive calls...")
+    execute_body = _commands_to_execute_body(transition_commands)
     code = _replace_execute_body(
         template_code,
         execute_body,
         final_target_qpos=plan_target_qpos,
         final_target_gripper=plan_target_gripper,
-        include_final_restore=(not no_interpolation),
+        include_final_restore=(not no_interpolation and not no_retrieval),
         final_target_qpos_candidates=target_qpos_candidates,
         target_top_k=target_top_k,
     )
