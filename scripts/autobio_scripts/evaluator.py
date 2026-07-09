@@ -27,6 +27,46 @@ UR5E_JOINT_NAMES = (
 )
 
 
+def _geom_name(model, geom_id: int) -> str:
+    geom_id = int(geom_id)
+    geom_names = getattr(model, "geom_names", None)
+    if isinstance(geom_names, dict):
+        return str(geom_names.get(geom_id, ""))
+    try:
+        return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+    except Exception:
+        try:
+            return str(model.geom(geom_id).name)
+        except Exception:
+            return ""
+
+
+def _is_robot_geom_name(name: str) -> bool:
+    normalized = str(name)
+    return (
+        normalized.startswith("/ur:")
+        or normalized.startswith("1/ur:")
+        or normalized.startswith("2/ur:")
+        or "/ur:" in normalized
+        or normalized.startswith("ur5")
+    )
+
+
+def count_robot_object_collision_contacts(model, data) -> int:
+    """Count unique robot-object contact pairs in the current MuJoCo contact buffer."""
+    robot_object_pairs: set[tuple[int, int]] = set()
+    for i in range(int(getattr(data, "ncon", 0))):
+        contact = data.contact[i]
+        geom1 = int(contact.geom1)
+        geom2 = int(contact.geom2)
+        geom1_is_robot = _is_robot_geom_name(_geom_name(model, geom1))
+        geom2_is_robot = _is_robot_geom_name(_geom_name(model, geom2))
+        if geom1_is_robot == geom2_is_robot:
+            continue
+        robot_object_pairs.add(tuple(sorted((geom1, geom2))))
+    return len(robot_object_pairs)
+
+
 def _ur5e_joint_ids(model) -> list[int]:
     try:
         return [model.joint(name).id for name in UR5E_JOINT_NAMES]
@@ -763,6 +803,7 @@ class Evaluator:
         transition_infer_total = 0.0
         transition_total = 0.0
         transition_count = 0
+        transition_collision_counts: dict[int, int] = {}
         executed_action_count = 0
         atomic_task_results: list[dict] = []
         settle_duration = 0.0
@@ -776,6 +817,7 @@ class Evaluator:
             "retrieval_collision_planner",
             "random_future_task_pose_collision_planner",
             "random_future_task_pose_rrt",
+            "random_dataset_task_pose_rrt",
         }:
             raise ValueError(f"Unsupported transition_mode: {transition_mode}")
         effective_intervention_mode = (intervention_mode or "non_timeout").strip().lower().replace("-", "_")
@@ -797,6 +839,10 @@ class Evaluator:
                 "episode_total": float(episode_total),
                 "transition_ratio": float(transition_ratio),
                 "atomic_task_results": list(atomic_task_results),
+                "transition_collision_counts": {
+                    str(index): int(count)
+                    for index, count in sorted(transition_collision_counts.items())
+                },
             }
 
         def print_timing_summary():
@@ -952,7 +998,7 @@ class Evaluator:
                     print(f"[Calibration] Failed to build transition calibration assets: {e}")
                 return front_path, side_path
 
-            def execute_transition_to(target_prompt: str, timing_label: str):
+            def execute_transition_to(target_prompt: str, timing_label: str, transition_index: int | None = None):
                 nonlocal transition_infer_total, transition_total, transition_count
                 if effective_transition_mode == "none":
                     print(f"[Transition] Skipped transition to {timing_label} (transition_mode=none).")
@@ -960,6 +1006,12 @@ class Evaluator:
 
                 transition_start_wall = time.perf_counter()
                 transition_infer_start_wall = time.perf_counter()
+                transition_collision_count = 0
+
+                def record_transition_collision_sample():
+                    nonlocal transition_collision_count
+                    transition_collision_count += count_robot_object_collision_contacts(self.model, self.data)
+
                 ur_joint_start = self.model.joint('/ur:shoulder_pan').qposadr.item()
                 ur_jnt_span = range(ur_joint_start, ur_joint_start + 6)
 
@@ -1030,6 +1082,7 @@ class Evaluator:
 
                     def step_and_log_with_capture(info: dict):
                         original_step_and_log(info)
+                        record_transition_collision_sample()
                         self._capture_replay_frame()
 
                     self.task.step_and_log = step_and_log_with_capture
@@ -1046,6 +1099,7 @@ class Evaluator:
 
                     def step_and_log_with_capture(info: dict):
                         original_step_and_log(info)
+                        record_transition_collision_sample()
                         self._capture_replay_frame()
 
                     self.task.step_and_log = step_and_log_with_capture
@@ -1073,6 +1127,15 @@ class Evaluator:
                 transition_elapsed = time.perf_counter() - transition_start_wall
                 transition_total += transition_elapsed
                 transition_count += 1
+                if transition_index is not None:
+                    transition_collision_counts[int(transition_index)] = (
+                        transition_collision_counts.get(int(transition_index), 0)
+                        + int(transition_collision_count)
+                    )
+                    print(
+                        f"[TransitionCollision] transition_{int(transition_index)} "
+                        f"robot_object_contacts={int(transition_collision_count)}"
+                    )
                 print(
                     f"[Timing] transition to {timing_label} took {transition_elapsed:.3f}s "
                     f"(inference {transition_infer_elapsed:.3f}s)"
@@ -1245,7 +1308,7 @@ class Evaluator:
                     if use_task_judge and action == "retry":
                         execute_retry_restore_to_initial(prompt_initial_state, timing_label)
                     else:
-                        execute_transition_to(target_prompt, timing_label)
+                        execute_transition_to(target_prompt, timing_label, transition_index=prompt_index + 1)
 
                 if action == "retry":
                     attempt_counts[prompt_index] += 1

@@ -141,7 +141,7 @@ def resolve_experiment_mode_config(
     if mode == "baseline":
         return {
             "use_transition_generation": True,
-            "transition_mode": "random_future_task_pose_rrt",
+            "transition_mode": "random_dataset_task_pose_rrt",
             "no_planning": False,
             "no_interpolation": False,
             "no_retrieval": False,
@@ -308,6 +308,62 @@ def print_atomic_task_success_summary(summary: dict[str, dict[str, int]]):
             f"{stats['success_count']}/{stats['max_success']} "
             f"(evaluated_episodes={stats['episode_count']})"
         )
+
+
+def _transition_collision_index(raw_key) -> int | None:
+    text = str(raw_key)
+    if text.startswith("transition_"):
+        text = text[len("transition_"):]
+    try:
+        index = int(text)
+    except (TypeError, ValueError):
+        return None
+    return index if index > 0 else None
+
+
+def build_transition_collision_summary(
+    episode_timings: list[dict],
+    num_episodes: int,
+    expected_transition_count: int | None = None,
+) -> dict[str, float]:
+    totals: dict[int, int] = {}
+    max_index = max(0, int(expected_transition_count or 0))
+
+    for timing in episode_timings:
+        raw_counts = timing.get("transition_collision_counts", {})
+        items = []
+        if isinstance(raw_counts, dict):
+            items = list(raw_counts.items())
+        elif isinstance(raw_counts, list):
+            items = list(enumerate(raw_counts, start=1))
+
+        for raw_index, raw_count in items:
+            index = _transition_collision_index(raw_index)
+            if index is None:
+                continue
+            try:
+                count = int(raw_count)
+            except (TypeError, ValueError):
+                continue
+            totals[index] = totals.get(index, 0) + count
+            max_index = max(max_index, index)
+
+    denominator = int(num_episodes) if int(num_episodes) > 0 else max(1, len(episode_timings))
+    return {
+        f"transition_{index}": float(totals.get(index, 0)) / float(denominator)
+        for index in range(1, max_index + 1)
+    }
+
+
+def print_transition_collision_summary(summary: dict[str, float]):
+    if len(summary) == 0:
+        return
+
+    formatted = ", ".join(
+        f"{transition_name}:{avg_count:.3f}"
+        for transition_name, avg_count in summary.items()
+    )
+    print(f"[TransitionCollisionAvg] {formatted}")
 
 _evaluator: "Evaluator"
 _policy: "Policy"
@@ -498,7 +554,7 @@ def parse_args():
         choices=EXPERIMENT_MODES,
         help=(
             "High-level experiment mode. no-transition: disable transitions; "
-            "baseline: random next-task init pose + RRT transition, falling back to interpolation; "
+            "baseline: random dataset init pose + RRT transition, falling back to interpolation; "
             "no-retrieval: planning/coding agents only with no target restore; "
             "no-agent: retrieve target pose, then interpolate restore without planning/coding agents; "
             "full: retrieval + planning + coding."
@@ -516,6 +572,7 @@ def parse_args():
             "retrieval_collision_planner",
             "random_future_task_pose_collision_planner",
             "random_future_task_pose_rrt",
+            "random_dataset_task_pose_rrt",
         ],
         help=(
             "Transition executor between prompts. auto preserves --use-transition-generation "
@@ -743,6 +800,14 @@ if __name__ == "__main__":
 
     atomic_task_summary = build_atomic_task_success_summary(episode_timings, args.num_episodes)
     print_atomic_task_success_summary(atomic_task_summary)
+    if experiment_config["transition_mode"] != "none":
+        expected_transition_count = max(0, len(prompts) - 1) if prompts is not None else 0
+        transition_collision_summary = build_transition_collision_summary(
+            episode_timings,
+            args.num_episodes,
+            expected_transition_count=expected_transition_count,
+        )
+        print_transition_collision_summary(transition_collision_summary)
 
     if args.save:
         import json

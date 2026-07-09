@@ -65,7 +65,7 @@ def test_rrt_planner_falls_back_to_interpolation_when_no_path_is_valid():
     np.testing.assert_allclose(plan.waypoints[-1], target)
 
 
-def test_baseline_experiment_mode_uses_random_future_task_pose_rrt():
+def test_baseline_experiment_mode_uses_random_dataset_task_pose_rrt():
     from evaluate import resolve_experiment_mode_config
 
     config = resolve_experiment_mode_config(
@@ -78,7 +78,7 @@ def test_baseline_experiment_mode_uses_random_future_task_pose_rrt():
     )
 
     assert config["use_transition_generation"] is True
-    assert config["transition_mode"] == "random_future_task_pose_rrt"
+    assert config["transition_mode"] == "random_dataset_task_pose_rrt"
 
 
 def test_evaluate_wires_no_render_video_flag_to_evaluator():
@@ -166,4 +166,48 @@ def test_random_future_task_qpos_samples_only_from_matched_task(tmp_path):
         [0, 0, 0, 0, 0, 0, 0],
         [1, 1, 1, 1, 1, 1, 1],
         [2, 2, 2, 2, 2, 2, 2],
+    ]
+
+
+def test_random_dataset_task_qpos_samples_without_prompt_matching(tmp_path):
+    from non_llm_transition import sample_random_dataset_task_qpos
+
+    qpos_db_path = tmp_path / "lerobot_initial_qpos.json"
+    qpos_db_path.write_text(
+        json.dumps(
+            [
+                {
+                    "task": "open the centrifuge lid",
+                    "initial_qpos": [[9, 9, 9, 9, 9, 9, 9]],
+                },
+                {
+                    "task": "close the lid of the thermal cycler",
+                    "initial_qpos": [
+                        [0, 0, 0, 0, 0, 0, 0],
+                        [1, 1, 1, 1, 1, 1, 1],
+                    ],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    selected_qpos, info = sample_random_dataset_task_qpos(
+        target_prompt="this prompt should not match anything",
+        qpos_db_path=qpos_db_path,
+        rng=np.random.default_rng(0),
+    )
+
+    assert info["selection_strategy"] == "random_dataset_task_pose"
+    assert info["requested_task_prompt"] == "this prompt should not match anything"
+    assert info["matched_task_prompt"] is None
+    assert info["selected_task_prompt"] in {
+        "open the centrifuge lid",
+        "close the lid of the thermal cycler",
+    }
+    assert info["candidate_count"] == 3
+    assert selected_qpos.tolist() in [
+        [9, 9, 9, 9, 9, 9, 9],
+        [0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 1],
     ]

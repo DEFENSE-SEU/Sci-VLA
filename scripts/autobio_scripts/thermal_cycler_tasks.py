@@ -8,6 +8,7 @@ from topp import Topp
 from task import Task, Expert, Manager, SCENE_ROOT
 from instrument import ThermalCyclerBioradC1000
 import random
+import shutil
 
 PCR_PLATE_TABLE_POS = np.array([0.0, 0.3, 0.824])
 PCR_PLATE_THERMAL_TARGET_POS = np.array([0.0, -0.174172, 0.914078])
@@ -27,6 +28,37 @@ THERMAL_CYCLER_PROMPT_TASKS = {
     "press the button to start the thermal cycler": "press_thermal_cycler_button",
     "screw loosen the knob of the thermal cycler": "screw_loosen_knob",
     "take pcrplate from the thermal cycler": "take_pcrPlate_from_thermalCycler",
+}
+
+THERMAL_CYCLER_ARM_PERTURB_RANGES = {
+    "open_thermal_cycler_lid": (
+        (-1.26, -0.25, -0.12, -0.50, -0.18, -0.16),
+        (-1.18, -0.05, 0.08, -0.30, 0.02, 0.04),
+    ),
+    "place_pcrPlate_into_thermalCycler": (
+        (-1.12, -0.18, -0.16, -0.35, -0.10, -0.08),
+        (-1.04, 0.02, 0.04, -0.15, 0.10, 0.12),
+    ),
+    "close_thermal_cycler_lid": (
+        (-0.98, -0.10, -0.08, -0.25, -0.02, -0.12),
+        (-0.90, 0.10, 0.12, -0.05, 0.18, 0.08),
+    ),
+    "screw_tighten_knob": (
+        (-0.84, -0.22, -0.04, -0.15, -0.16, -0.04),
+        (-0.76, -0.02, 0.16, 0.05, 0.04, 0.16),
+    ),
+    "press_thermal_cycler_button": (
+        (-0.70, -0.14, -0.20, -0.45, -0.08, -0.18),
+        (-0.62, 0.06, 0.00, -0.25, 0.12, 0.02),
+    ),
+    "screw_loosen_knob": (
+        (-0.56, -0.06, -0.12, -0.10, -0.20, -0.10),
+        (-0.48, 0.14, 0.08, 0.10, 0.00, 0.10),
+    ),
+    "take_pcrPlate_from_thermalCycler": (
+        (-0.42, 0.00, -0.06, -0.20, -0.04, -0.20),
+        (-0.34, 0.20, 0.14, 0.00, 0.16, 0.00),
+    ),
 }
 
 
@@ -268,15 +300,22 @@ class ThermalCyclerManipulate(Task):
         self.arm = UR5eArm(self.model, '/ur:')
         self._thermal_cycler_button_touched = False
 
+    def _apply_arm_qpos_perturbation(self):
+        task_range = THERMAL_CYCLER_ARM_PERTURB_RANGES.get(self.task)
+        if task_range is None:
+            perturbation = self.arm.qpos_perturb()
+        else:
+            perturbation = np.random.uniform(*task_range)
+        self.data.qpos[self.arm.jnt_span] += perturbation
+        self.data.ctrl[self.arm.act_span] += perturbation
+
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
         self._thermal_cycler_button_touched = False
 
         # Randomize the arm joint position
-        perturbation = self.arm.qpos_perturb()
-        self.data.qpos[self.arm.jnt_span] += perturbation
-        self.data.ctrl[self.arm.act_span] += perturbation
+        self._apply_arm_qpos_perturbation()
         mujoco.mj_kinematics(self.model, self.data)
 
         # Task-specific setup
@@ -714,11 +753,14 @@ def generate_dataset(
     episodes: int = 100,
     log_root: str | Path = "logs/thermal_cycler_tasks",
     tasks: list[str] | None = None,
+    max_attempts_per_episode: int = 3,
 ):
     from tqdm import trange
 
     if episodes <= 0:
         raise ValueError("episodes must be positive")
+    if max_attempts_per_episode <= 0:
+        raise ValueError("max_attempts_per_episode must be positive")
 
     selected_tasks = DEFAULT_DATASET_TASKS if tasks is None else tasks
     log_root = Path(log_root)
@@ -731,9 +773,28 @@ def generate_dataset(
         expert.task = task
         print("processing task: ", task)
         for i in trange(episodes):
-            expert.reset(i)
-            expert.set_serializer(log_root=log_root, log_name=f"{task}_{i:04d}")
-            expert.execute()
+            success = False
+            for attempt in range(1, max_attempts_per_episode + 1):
+                seed = i if attempt == 1 else i + attempt * episodes
+                expert.reset(seed)
+                expert.set_serializer(log_root=log_root, log_name=f"{task}_{i:04d}")
+                generated_dir = Path(expert.serializer.save_dir)
+                expert.execute()
+                success = bool(expert.check())
+                print(f"task={task} episode={i:04d} attempt={attempt} success={success}")
+                if success:
+                    break
+
+                failed_dir = generated_dir
+                if failed_dir.exists():
+                    shutil.rmtree(failed_dir)
+                print(f"removed failed episode dir: {failed_dir}")
+
+            if not success:
+                raise RuntimeError(
+                    f"Failed to generate successful episode for task={task} episode={i:04d} "
+                    f"after {max_attempts_per_episode} attempts"
+                )
 
 
 def parse_args():
@@ -756,9 +817,20 @@ def parse_args():
         default=None,
         help="Optional subset of thermal cycler tasks to generate.",
     )
+    parser.add_argument(
+        "--max-attempts-per-episode",
+        type=int,
+        default=3,
+        help="Maximum generation attempts for each episode before failing.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    generate_dataset(episodes=args.episodes, log_root=args.log_root, tasks=args.tasks)
+    generate_dataset(
+        episodes=args.episodes,
+        log_root=args.log_root,
+        tasks=args.tasks,
+        max_attempts_per_episode=args.max_attempts_per_episode,
+    )

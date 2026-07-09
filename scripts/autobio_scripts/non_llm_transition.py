@@ -653,6 +653,80 @@ def sample_random_future_task_qpos(
     }
 
 
+def _iter_qpos_entries_from_db(qpos_db: dict | list) -> list[dict]:
+    tasks = qpos_db if isinstance(qpos_db, list) else qpos_db.get("tasks", [])
+    if not isinstance(tasks, list):
+        raise ValueError("Invalid qpos database format: expected a list")
+
+    entries = []
+    for task_index, task_record in enumerate(tasks):
+        if not isinstance(task_record, dict):
+            continue
+        task_prompt = str(task_record.get("task", task_record.get("task_prompt", ""))).strip()
+        initial_qpos = task_record.get("initial_qpos")
+        if isinstance(initial_qpos, list):
+            for qpos_index, qpos in enumerate(initial_qpos):
+                if qpos is not None:
+                    entries.append(
+                        {
+                            "task_index": task_index,
+                            "task_prompt": task_prompt,
+                            "qpos_index": qpos_index,
+                            "qpos": qpos,
+                        }
+                    )
+
+        nested_entries = task_record.get("entries", [])
+        if isinstance(nested_entries, list):
+            for qpos_index, entry in enumerate(nested_entries):
+                if not isinstance(entry, dict) or entry.get("initial_qpos") is None:
+                    continue
+                entries.append(
+                    {
+                        "task_index": task_index,
+                        "task_prompt": task_prompt,
+                        "qpos_index": qpos_index,
+                        "qpos": entry["initial_qpos"],
+                    }
+                )
+
+    if not entries:
+        raise ValueError("No initial_qpos entries found in qpos database")
+    return entries
+
+
+def sample_random_dataset_task_qpos(
+    *,
+    target_prompt: str,
+    qpos_db_path: Path = Path("logs/lerobot_initial_qpos.json"),
+    rng: np.random.Generator | None = None,
+) -> tuple[np.ndarray, dict]:
+    if not qpos_db_path.exists():
+        raise FileNotFoundError(
+            f"Qpos database not found at {qpos_db_path}. "
+            "Please run export_lerobot_initial_qpos.py first."
+        )
+    with open(qpos_db_path, "r", encoding="utf-8") as f:
+        qpos_db = json.load(f)
+
+    entries = _iter_qpos_entries_from_db(qpos_db)
+    generator = rng if rng is not None else np.random.default_rng()
+    selected_entry_index = int(generator.integers(0, len(entries)))
+    selected_entry = entries[selected_entry_index]
+    selected_qpos = _as_joint_vector(selected_entry["qpos"])
+    return selected_qpos, {
+        "requested_task_prompt": target_prompt,
+        "matched_task_prompt": None,
+        "selected_task_prompt": selected_entry["task_prompt"],
+        "selected_task_index": int(selected_entry["task_index"]),
+        "selected_qpos_index": int(selected_entry["qpos_index"]),
+        "selected_index": selected_entry_index,
+        "candidate_count": len(entries),
+        "selection_strategy": "random_dataset_task_pose",
+        "selected_qpos": selected_qpos.tolist(),
+    }
+
+
 def execute_non_llm_transition(
     *,
     model,
@@ -671,6 +745,7 @@ def execute_non_llm_transition(
         "retrieval_collision_planner",
         "random_future_task_pose_collision_planner",
         "random_future_task_pose_rrt",
+        "random_dataset_task_pose_rrt",
     }:
         raise ValueError(f"Unsupported non-LLM transition mode: {mode}")
 
@@ -683,7 +758,13 @@ def execute_non_llm_transition(
     joint_ranges = None
     planning_start = time.perf_counter()
 
-    if mode in {"random_future_task_pose_collision_planner", "random_future_task_pose_rrt"}:
+    if mode == "random_dataset_task_pose_rrt":
+        target_qpos, retrieval_info = sample_random_dataset_task_qpos(
+            target_prompt=target_prompt,
+            qpos_db_path=qpos_db_path,
+            rng=rng,
+        )
+    elif mode in {"random_future_task_pose_collision_planner", "random_future_task_pose_rrt"}:
         target_qpos, retrieval_info = sample_random_future_task_qpos(
             target_prompt=target_prompt,
             qpos_db_path=qpos_db_path,
@@ -700,7 +781,7 @@ def execute_non_llm_transition(
     target_arm_qpos = _as_joint_vector(target_qpos, dim=current_joint_pos.size)
     target_gripper = float(target_qpos[-1]) if target_qpos.size > current_joint_pos.size else None
 
-    if mode == "random_future_task_pose_rrt":
+    if mode in {"random_future_task_pose_rrt", "random_dataset_task_pose_rrt"}:
         path_plan = plan_joint_path_rrt(
             current_joint_pos,
             target_arm_qpos,

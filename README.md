@@ -172,7 +172,7 @@ python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2'
 | Mode | Transition behavior |
 | --- | --- |
 | `no-transition` | Disable transitions between prompts. This is the default mode. |
-| `baseline` | Randomly sample an initial pose from the next task's dataset, then use collision-aware interpolation to restore to that pose. |
+| `baseline` | Randomly sample an initial pose directly from the dataset without retrieval, then use RRT to restore to that pose; if RRT fails, it prints `FALLBACK` and falls back to interpolation. |
 | `no-retrieval` | Do not provide a target pose. Run the planning/coding agents only, and do not append final target-pose restoration. |
 | `no-agent` | Retrieve the target pose, skip planning/coding agents, and directly interpolate to the retrieved pose. |
 | `full` | Full Sci-VLA transition pipeline: retrieval, planning agent, coding/primitive execution, and final target-pose restoration. |

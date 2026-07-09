@@ -9,6 +9,7 @@ from task import Task, Expert, Manager, SCENE_ROOT
 from instrument import Centrifuge_Eppendorf_5910
 from scipy.spatial.transform import Rotation as R
 import random
+import shutil
 
 LID_OPEN_BUTTON_PRE_CLEARANCE = 0.12
 # The button site is 4 mm above the cap top; -8 mm reaches the cap near the
@@ -25,6 +26,37 @@ CENTRIFUGE5910_PROMPT_TASKS = {
     "press the screen button to start the centrifuge5910": "press_centrifuge5910_button",
     "pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack": "take_experimental_tube_from_centrifuge5910",
     "pick the balance centrifuge tube from the centrifuge5910 and place it on the rack": "take_balance_tube_from_centrifuge5910",
+}
+
+CENTRIFUGE5910_ARM_PERTURB_RANGES = {
+    "open_centrifuge5910_lid": (
+        (-3.62, -0.26, -0.18, -0.24, -0.18, -0.12),
+        (-3.56, -0.06, 0.02, -0.04, 0.02, 0.04),
+    ),
+    "place_experimental_tube_into_centrifuge5910": (
+        (-3.54, -0.12, -0.24, -0.10, -0.08, -0.08),
+        (-3.48, 0.08, -0.04, 0.10, 0.12, 0.08),
+    ),
+    "place_balance_tube_into_centrifuge5910": (
+        (-3.46, -0.04, -0.18, -0.20, -0.16, -0.06),
+        (-3.40, 0.16, 0.02, 0.00, 0.04, 0.10),
+    ),
+    "close_centrifuge5910_lid": (
+        (-3.38, 0.02, -0.10, -0.16, -0.02, -0.10),
+        (-3.32, 0.22, 0.10, 0.04, 0.18, 0.06),
+    ),
+    "press_centrifuge5910_button": (
+        (-3.30, -0.20, -0.08, -0.06, -0.20, -0.04),
+        (-3.24, 0.00, 0.12, 0.14, 0.00, 0.12),
+    ),
+    "take_experimental_tube_from_centrifuge5910": (
+        (-3.22, 0.10, -0.22, -0.02, -0.12, -0.12),
+        (-3.16, 0.30, -0.02, 0.18, 0.08, 0.04),
+    ),
+    "take_balance_tube_from_centrifuge5910": (
+        (-3.14, -0.28, -0.12, -0.28, 0.00, -0.02),
+        (-3.08, -0.08, 0.08, -0.08, 0.20, 0.14),
+    ),
 }
 
 
@@ -400,7 +432,11 @@ class Centrifuge5910Manipulate(Task):
 
     def _apply_arm_qpos_perturbation(self, lows=None, highs=None):
         if lows is None and highs is None:
-            perturbation = self.arm.qpos_perturb()
+            task_range = CENTRIFUGE5910_ARM_PERTURB_RANGES.get(self.task)
+            if task_range is None:
+                perturbation = self.arm.qpos_perturb()
+            else:
+                perturbation = np.random.uniform(*task_range)
         elif lows is None or highs is None:
             raise ValueError("Both lows and highs must be provided for custom perturbation")
         else:
@@ -671,6 +707,14 @@ class Centrifuge5910Manipulate(Task):
             and abs(float(tube_pos[2] - rack_pos[2])) <= z_tol
         )
 
+    def _tube_on_any_rack_slot(self, tube: CentrifugeTube, xy_tol: float = 0.10, z_tol: float = 0.16) -> bool:
+        grid = self.rack1.grids["50ml"]
+        for row in range(int(grid["rows"])):
+            for col in range(int(grid["cols"])):
+                if self._tube_on_rack(tube, row, col, xy_tol=xy_tol, z_tol=z_tol):
+                    return True
+        return False
+
     def _eef_near(self, target_pos: np.ndarray, tol: float = 0.12) -> bool:
         gripper_pose = self.arm.get_site_pose(self.data)
         return np.linalg.norm(gripper_pose.pos - np.asarray(target_pos, dtype=np.float64)) <= tol
@@ -700,9 +744,9 @@ class Centrifuge5910Manipulate(Task):
             case 'place_balance_tube_into_centrifuge5910':
                 return self._tube_in_slot(self.tube2, 0) or self._tube_in_slot(self.tube2, 1)
             case 'take_experimental_tube_from_centrifuge5910' | 'take_experimental_tube_from_centrifuge':
-                return self._tube_on_rack(self.tube, 1, 4)
+                return self._tube_on_any_rack_slot(self.tube)
             case 'take_balance_tube_from_centrifuge5910':
-                return self._tube_on_rack(self.tube2, 0, 2)
+                return self._tube_on_any_rack_slot(self.tube2)
             case 'press_centrifuge5910_button':
                 return self._centrifuge5910_button_touched
         return False
@@ -878,7 +922,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 final_pose.quat = lock_quat
                 self.move_to(final_pose, num_steps=5)
             case 'take_experimental_tube_from_centrifuge5910':
-                slot_id=0
+                slot_id=1
                 eef_pose = self.tube.get_end_effector_pose(self.data)
                 pre_end_pos = self.tube_end_pos.copy()
                 tube_pose = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
@@ -1152,11 +1196,14 @@ def generate_dataset(
     episodes: int = 100,
     log_root: str | Path = "logs/centrifuge5910_tasks",
     tasks: list[str] | None = None,
+    max_attempts_per_episode: int = 3,
 ):
     from tqdm import trange
 
     if episodes <= 0:
         raise ValueError("episodes must be positive")
+    if max_attempts_per_episode <= 0:
+        raise ValueError("max_attempts_per_episode must be positive")
 
     selected_tasks = DEFAULT_DATASET_TASKS if tasks is None else tasks
     log_root = Path(log_root)
@@ -1169,9 +1216,28 @@ def generate_dataset(
         expert.task = task
         print("processing task: ", task)
         for i in trange(episodes):
-            expert.reset(i)
-            expert.set_serializer(log_root=log_root, log_name=f"{task}_{i:04d}")
-            expert.execute()
+            success = False
+            for attempt in range(1, max_attempts_per_episode + 1):
+                seed = i if attempt == 1 else i + attempt * episodes
+                expert.reset(seed)
+                expert.set_serializer(log_root=log_root, log_name=f"{task}_{i:04d}")
+                generated_dir = Path(expert.serializer.save_dir)
+                expert.execute()
+                success = bool(expert.check())
+                print(f"task={task} episode={i:04d} attempt={attempt} success={success}")
+                if success:
+                    break
+
+                failed_dir = generated_dir
+                if failed_dir.exists():
+                    shutil.rmtree(failed_dir)
+                print(f"removed failed episode dir: {failed_dir}")
+
+            if not success:
+                raise RuntimeError(
+                    f"Failed to generate successful episode for task={task} episode={i:04d} "
+                    f"after {max_attempts_per_episode} attempts"
+                )
 
 
 def parse_args():
@@ -1194,9 +1260,20 @@ def parse_args():
         default=None,
         help="Optional subset of centrifuge5910 tasks to generate.",
     )
+    parser.add_argument(
+        "--max-attempts-per-episode",
+        type=int,
+        default=3,
+        help="Maximum generation attempts for each episode before failing.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    generate_dataset(episodes=args.episodes, log_root=args.log_root, tasks=args.tasks)
+    generate_dataset(
+        episodes=args.episodes,
+        log_root=args.log_root,
+        tasks=args.tasks,
+        max_attempts_per_episode=args.max_attempts_per_episode,
+    )
