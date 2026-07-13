@@ -59,6 +59,11 @@ CENTRIFUGE5910_ARM_PERTURB_RANGES = {
     ),
 }
 
+CENTRIFUGE5910_LONG_TASK_FIRST_ATOMIC_TASK = {
+    "centrifuge5910_long_task_1": "open_centrifuge5910_lid",
+    "centrifuge5910_long_task_2": "press_centrifuge5910_button",
+}
+
 
 def _normalize_prompt(text: str) -> str:
     return " ".join(text.replace("_", " ").replace("-", " ").lower().split())
@@ -425,6 +430,7 @@ class Centrifuge5910Manipulate(Task):
         self.tube_start_pos = np.zeros(3)
         self.tube2_start_pos = np.zeros(3)
         self._centrifuge5910_button_touched = False
+        self._atomic_start_conditions: dict[str, bool] = {}
 
     def _forward_and_update_instrument(self):
         mujoco.mj_forward(self.model, self.data)
@@ -432,7 +438,8 @@ class Centrifuge5910Manipulate(Task):
 
     def _apply_arm_qpos_perturbation(self, lows=None, highs=None):
         if lows is None and highs is None:
-            task_range = CENTRIFUGE5910_ARM_PERTURB_RANGES.get(self.task)
+            perturb_task = CENTRIFUGE5910_LONG_TASK_FIRST_ATOMIC_TASK.get(self.task, self.task)
+            task_range = CENTRIFUGE5910_ARM_PERTURB_RANGES.get(perturb_task)
             if task_range is None:
                 perturbation = self.arm.qpos_perturb()
             else:
@@ -448,6 +455,7 @@ class Centrifuge5910Manipulate(Task):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
         self._centrifuge5910_button_touched = False
+        self._atomic_start_conditions = {}
         # 随机选择一个槽位（0-13）
         match self.task:
             case 'centrifuge5910_long_task_1':
@@ -649,6 +657,7 @@ class Centrifuge5910Manipulate(Task):
                 prefix='press the screen button of the centrifuge5910'
             case _:
                 raise ValueError(f"Unknown task: {self.task}")
+        self.record_atomic_start()
         self.task_info = {
             'prefix': prefix,
             'state_indices': self.arm.state_indices,
@@ -699,6 +708,9 @@ class Centrifuge5910Manipulate(Task):
             and abs(float(tube_pos[2] - slot_pos[2])) <= z_tol
         )
 
+    def _tube_in_any_slot(self, tube: CentrifugeTube) -> bool:
+        return self._tube_in_slot(tube, 0) or self._tube_in_slot(tube, 1)
+
     def _tube_on_rack(self, tube: CentrifugeTube, row: int, col: int, xy_tol: float = 0.10, z_tol: float = 0.16) -> bool:
         tube_pos = self._tube_position(tube)
         rack_pos = np.asarray(self.rack1.get_position(self.data, row, col, "50ml"), dtype=np.float64)
@@ -727,22 +739,47 @@ class Centrifuge5910Manipulate(Task):
         super().step_and_log(info)
         self._update_button_touch_state()
 
-    def check(self, prompt: str | None = None):
-        self._update_button_touch_state()
-        task = self._success_task_from_prompt(prompt)
+    def _lid_closed_and_locked(self) -> bool:
         lid_qpos = float(self.data.qpos[self.instrument.lid_qposadr])
         lid_joint_limit = self.instrument.lid_jntlimit
-        lid_locked = bool(self.data.eq_active[self.instrument.lid_lock] == 1)
+        return bool(self.data.eq_active[self.instrument.lid_lock] == 1) and lid_qpos >= lid_joint_limit[1] - 0.05
 
+    def _lid_fully_open(self) -> bool:
+        lid_qpos = float(self.data.qpos[self.instrument.lid_qposadr])
+        return bool(self.data.eq_active[self.instrument.lid_lock] == 0) and lid_qpos <= self.instrument.lid_jntlimit[0] + 0.05
+
+    def _atomic_start_condition(self, task: str) -> bool:
         match task:
             case 'open_centrifuge5910_lid':
-                return (not lid_locked) and lid_qpos <= self.instrument.lid_jntlimit[0] + 0.05
+                return self._lid_closed_and_locked()
             case 'close_centrifuge5910_lid' | 'close_centrifuge_5910_lid':
-                return lid_locked and lid_qpos >= lid_joint_limit[1] - 0.05
+                return self._lid_fully_open()
             case 'place_experimental_tube_into_centrifuge5910':
-                return self._tube_in_slot(self.tube, 0) or self._tube_in_slot(self.tube, 1)
+                return self._tube_on_any_rack_slot(self.tube)
             case 'place_balance_tube_into_centrifuge5910':
-                return self._tube_in_slot(self.tube2, 0) or self._tube_in_slot(self.tube2, 1)
+                return self._tube_on_any_rack_slot(self.tube2)
+            case 'take_experimental_tube_from_centrifuge5910' | 'take_experimental_tube_from_centrifuge':
+                return self._tube_in_any_slot(self.tube)
+            case 'take_balance_tube_from_centrifuge5910':
+                return self._tube_in_any_slot(self.tube2)
+            case 'press_centrifuge5910_button':
+                return (
+                    self._lid_closed_and_locked()
+                    and self._tube_in_any_slot(self.tube)
+                    and self._tube_in_any_slot(self.tube2)
+                )
+        return False
+
+    def _atomic_end_condition(self, task: str) -> bool:
+        match task:
+            case 'open_centrifuge5910_lid':
+                return self._lid_fully_open()
+            case 'close_centrifuge5910_lid' | 'close_centrifuge_5910_lid':
+                return self._lid_closed_and_locked()
+            case 'place_experimental_tube_into_centrifuge5910':
+                return self._tube_in_any_slot(self.tube)
+            case 'place_balance_tube_into_centrifuge5910':
+                return self._tube_in_any_slot(self.tube2)
             case 'take_experimental_tube_from_centrifuge5910' | 'take_experimental_tube_from_centrifuge':
                 return self._tube_on_any_rack_slot(self.tube)
             case 'take_balance_tube_from_centrifuge5910':
@@ -750,6 +787,20 @@ class Centrifuge5910Manipulate(Task):
             case 'press_centrifuge5910_button':
                 return self._centrifuge5910_button_touched
         return False
+
+    def record_atomic_start(self, prompt: str | None = None):
+        task = self._success_task_from_prompt(prompt)
+        self._atomic_start_conditions[task] = bool(self._atomic_start_condition(task))
+
+    def _atomic_start_satisfied(self, task: str) -> bool:
+        if task not in self._atomic_start_conditions:
+            self._atomic_start_conditions[task] = bool(self._atomic_start_condition(task))
+        return bool(self._atomic_start_conditions[task])
+
+    def check(self, prompt: str | None = None):
+        self._update_button_touch_state()
+        task = self._success_task_from_prompt(prompt)
+        return self._atomic_start_satisfied(task) and self._atomic_end_condition(task)
 
 
 class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):

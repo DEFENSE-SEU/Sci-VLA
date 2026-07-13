@@ -61,6 +61,11 @@ THERMAL_CYCLER_ARM_PERTURB_RANGES = {
     ),
 }
 
+THERMAL_CYCLER_LONG_TASK_FIRST_ATOMIC_TASK = {
+    "thermal_cycler_long_task_1": "open_thermal_cycler_lid",
+    "thermal_cycler_long_task_2": "screw_loosen_knob",
+}
+
 
 def _normalize_prompt(text: str) -> str:
     return " ".join(text.replace("_", " ").replace("-", " ").lower().split())
@@ -299,9 +304,11 @@ class ThermalCyclerManipulate(Task):
         super().__init__(manager)
         self.arm = UR5eArm(self.model, '/ur:')
         self._thermal_cycler_button_touched = False
+        self._atomic_start_conditions: dict[str, bool] = {}
 
     def _apply_arm_qpos_perturbation(self):
-        task_range = THERMAL_CYCLER_ARM_PERTURB_RANGES.get(self.task)
+        perturb_task = THERMAL_CYCLER_LONG_TASK_FIRST_ATOMIC_TASK.get(self.task, self.task)
+        task_range = THERMAL_CYCLER_ARM_PERTURB_RANGES.get(perturb_task)
         if task_range is None:
             perturbation = self.arm.qpos_perturb()
         else:
@@ -313,6 +320,7 @@ class ThermalCyclerManipulate(Task):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
         self._thermal_cycler_button_touched = False
+        self._atomic_start_conditions = {}
 
         # Randomize the arm joint position
         self._apply_arm_qpos_perturbation()
@@ -419,10 +427,16 @@ class ThermalCyclerManipulate(Task):
                 #盖子关闭
                 self.data.qpos[self.instrument.lid_qposadr] = self.instrument.lid_jntlimit[0]
                 self.data.qpos[self.instrument.lever_qposadr] = self.instrument.lever_jntlimit[0]
+                knob_range = self.model.jnt_range[self.instrument.lid_force_knob_joint]
+                knob_tight_qpos = np.clip(np.pi / 2, knob_range[0], knob_range[1])
+                knob_dofadr = self.model.jnt_dofadr[self.instrument.lid_force_knob_joint]
+                self.data.qpos[self.instrument.lid_force_knob_qposadr] = knob_tight_qpos
+                self.data.qvel[knob_dofadr] = 0.0
                 mujoco.mj_kinematics(self.model, self.data)
                 prefix = 'press the button of the thermal cycler'
             case _:
                 raise ValueError(f"Unknown task: {self.task}")
+        self.record_atomic_start()
         self.time_limit = 30
 
         self.task_info = {
@@ -481,6 +495,20 @@ class ThermalCyclerManipulate(Task):
         knob_qpos = float(self.data.qpos[self.instrument.lid_force_knob_qposadr])
         return knob_qpos <= max_qpos
 
+    def _lid_closed(self) -> bool:
+        cur_qpos = self.data.qpos[[self.instrument.lid_qposadr, self.instrument.lever_qposadr]]
+        return (
+            abs(float(cur_qpos[0] - self.instrument.lid_jntlimit[0])) < 0.03
+            and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[0])) < 0.03
+        )
+
+    def _lid_open(self) -> bool:
+        cur_qpos = self.data.qpos[[self.instrument.lid_qposadr, self.instrument.lever_qposadr]]
+        return (
+            abs(float(cur_qpos[0] - self.instrument.lid_jntlimit[1])) < 0.03
+            and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[1])) < 0.03
+        )
+
     def _eef_near_start_button(self, tol: float = 0.07) -> bool:
         gripper_pose = self.arm.get_site_pose(self.data)
         button_body_id = self.model.body("/thermal_cycler_biorad_c1000:start-button").id
@@ -495,22 +523,34 @@ class ThermalCyclerManipulate(Task):
         super().step_and_log(info)
         self._update_button_touch_state()
 
-    def check(self, prompt: str | None = None):
-        self._update_button_touch_state()
-        task = self._success_task_from_prompt(prompt)
-        cur_qpos = self.data.qpos[[self.instrument.lid_qposadr, self.instrument.lever_qposadr]]
-
+    def _atomic_start_condition(self, task: str) -> bool:
         match task:
             case 'close_thermal_cycler_lid':
-                return (
-                    abs(float(cur_qpos[0] - self.instrument.lid_jntlimit[0])) < 0.03
-                    and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[0])) < 0.03
-                )
+                return self._lid_open()
             case 'open_thermal_cycler_lid':
+                return self._lid_closed()
+            case 'place_pcrPlate_into_thermalCycler':
+                return self._plate_near(PCR_PLATE_TABLE_POS, xy_tol=0.08, z_tol=0.14)
+            case 'take_pcrPlate_from_thermalCycler':
+                return self._plate_near(PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET)
+            case 'screw_tighten_knob':
+                return self._lid_closed() and self._knob_loosened()
+            case 'screw_loosen_knob':
+                return self._lid_closed() and self._knob_tightened()
+            case 'press_thermal_cycler_button':
                 return (
-                    abs(float(cur_qpos[0] - self.instrument.lid_jntlimit[1])) < 0.03
-                    and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[1])) < 0.03
+                    self._plate_near(PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET)
+                    and self._lid_closed()
+                    and self._knob_tightened()
                 )
+        return False
+
+    def _atomic_end_condition(self, task: str) -> bool:
+        match task:
+            case 'close_thermal_cycler_lid':
+                return self._lid_closed()
+            case 'open_thermal_cycler_lid':
+                return self._lid_open()
             case 'place_pcrPlate_into_thermalCycler':
                 return self._plate_near(PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET)
             case 'take_pcrPlate_from_thermalCycler':
@@ -522,6 +562,20 @@ class ThermalCyclerManipulate(Task):
             case 'press_thermal_cycler_button':
                 return self._thermal_cycler_button_touched
         return False
+
+    def record_atomic_start(self, prompt: str | None = None):
+        task = self._success_task_from_prompt(prompt)
+        self._atomic_start_conditions[task] = bool(self._atomic_start_condition(task))
+
+    def _atomic_start_satisfied(self, task: str) -> bool:
+        if task not in self._atomic_start_conditions:
+            self._atomic_start_conditions[task] = bool(self._atomic_start_condition(task))
+        return bool(self._atomic_start_conditions[task])
+
+    def check(self, prompt: str | None = None):
+        self._update_button_touch_state()
+        task = self._success_task_from_prompt(prompt)
+        return self._atomic_start_satisfied(task) and self._atomic_end_condition(task)
 
 
 class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):

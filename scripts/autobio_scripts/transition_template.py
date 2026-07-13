@@ -74,6 +74,11 @@ class TransitionExpert:
         path = self.interpolate(cur_pos, pose, num_steps)
         self.path_follow(path)
 
+    def move_to_rrt(self, pose: Pose, num_steps: int = 100):
+        self.ik.initial_qpos = np.asarray(self.data.qpos[self.jnt_span], dtype=np.float64).copy()
+        target_qpos = self.ik.solve(pose.pos, pose.quat)
+        self.move_to_target_qpos_rrt(target_qpos, num_steps=num_steps)
+
     def gripper_control(self, value: float, delay: int = 300):
         self.data.ctrl[self.gripper_id] = value
         for _ in range(delay):
@@ -111,7 +116,7 @@ class TransitionExpert:
             pos=cur_pose.pos + axis_to_delta[axis_key] * float(distance_m),
             quat=cur_pose.quat,
         )
-        self.move_to(end_pose, num_steps=int(steps))
+        self.move_to_rrt(end_pose, num_steps=int(steps))
 
     def rotate_ee(self, axis: str, angle_deg: float, steps: int = 100):
         axis_key = str(axis).lower()
@@ -120,7 +125,7 @@ class TransitionExpert:
         cur_pose = self.get_site_pose(self.data)
         target_quat = self.rotate_gripper(float(angle_deg), axis_key, cur_pose.quat)
         end_pose = Pose(pos=cur_pose.pos, quat=target_quat)
-        self.move_to(end_pose, num_steps=int(steps))
+        self.move_to_rrt(end_pose, num_steps=int(steps))
 
     def wait_steps(self, steps: int):
         for _ in range(int(steps)):
@@ -162,17 +167,53 @@ class TransitionExpert:
             self.data.ctrl[self.act_span] = traj[step]
             self.task.step_and_log({})
 
+    def move_to_target_qpos_rrt(
+        self,
+        q_target,
+        num_steps=1000,
+        validation_steps_per_segment: int = 100,
+    ):
+        from non_llm_transition import (
+            execute_interpolated_joint_path,
+            plan_joint_path_rrt,
+            validate_joint_path_in_mujoco,
+        )
+
+        q_curr = np.asarray(self.data.qpos[self.jnt_span], dtype=np.float64).copy()
+        target_qpos = np.asarray(q_target, dtype=np.float64).reshape(-1)[: self.dof]
+        path_plan = plan_joint_path_rrt(
+            q_curr,
+            target_qpos,
+            path_validator=lambda path: validate_joint_path_in_mujoco(
+                self.model,
+                self.data,
+                self.jnt_span,
+                path,
+                num_steps_per_segment=int(validation_steps_per_segment),
+            ),
+            joint_ranges=None,
+        )
+        if "FALLBACK" in path_plan.status:
+            print("[Transition] RRT FAILED; FALLBACK to direct interpolation for transition action.")
+        execute_interpolated_joint_path(
+            task=self.task,
+            data=self.data,
+            act_span=self.act_span,
+            waypoints=path_plan.waypoints,
+            steps_per_segment=int(num_steps),
+        )
+
 
     # The real action needs to be replaced
     def execute(self):
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.11, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.12, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.12, "steps": 100}, {"op": "translate", "axis": "x", "distance_m": 0.08, "steps": 100}])
+        self.execute_transition_commands([{"op": "translate", "axis": "z", "distance_m": 0.05, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.1, "steps": 100}, {"op": "translate", "axis": "x", "distance_m": -0.08, "steps": 100}, {"op": "open_gripper", "delay": 100}, {"op": "wait", "steps": 500}, {"op": "close_gripper", "delay": 100}])
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path
-        target_qpos_candidates = [[-3.4000000953674316, -1.655156135559082, 1.6591864824295044, -1.7621535062789917, -1.688430905342102, -1.6606453657150269, 0.0], [-3.4000000953674316, -1.3833837509155273, 1.7184778451919556, -1.5584577322006226, -1.677708625793457, -1.668520212173462, 0.0], [-3.4000000953674316, -1.6982600688934326, 1.7217307090759277, -1.5709794759750366, -1.3848294019699097, -1.670090913772583, 0.0]]
+        target_qpos_candidates = [[-1.1028250455856323, -1.5688995122909546, 1.574247121810913, -1.7400238513946533, -1.5294241905212402, -1.6271847486495972, 0.0], [-1.0971156358718872, -1.5591788291931152, 1.564862608909607, -1.7234259843826294, -1.6291669607162476, -1.623416543006897, 0.0], [-1.1163166761398315, -1.6767514944076538, 1.4592636823654175, -1.7951040267944336, -1.4727779626846313, -1.6246824264526367, 0.0]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],
@@ -187,5 +228,5 @@ class TransitionExpert:
         target_qpos_full = np.asarray(target_selection["selected_qpos"], dtype=np.float64).reshape(-1)
         target_qpos = target_qpos_full[:self.dof].tolist()
         target_gripper = float(target_qpos_full[-1]) if target_qpos_full.size > self.dof else None
-        self.move_to_target_qpos(target_qpos)
+        self.move_to_target_qpos_rrt(target_qpos)
         self.gripper_control(target_gripper)

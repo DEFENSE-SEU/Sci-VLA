@@ -74,27 +74,27 @@ def test_long_task_2_uses_press_button_locked_lid_offset():
 
 def test_centrifuge5910_check_uses_requested_atomic_success_conditions():
     source = CENTRIFUGE_SOURCE.read_text(encoding="utf-8")
-    check_body = source.split("def check(self, prompt: str | None = None):", 1)[1].split(
-        "class Centrifuge5910ManipulateExpert",
+    end_condition_body = source.split("def _atomic_end_condition(self, task: str) -> bool:", 1)[1].split(
+        "def record_atomic_start",
         1,
     )[0]
 
-    open_branch = check_body.split("case 'open_centrifuge5910_lid':", 1)[1].split("case ", 1)[0]
-    close_branch = check_body.split("case 'close_centrifuge5910_lid'", 1)[1].split("case ", 1)[0]
-    press_branch = check_body.split("case 'press_centrifuge5910_button':", 1)[1].split(
+    open_branch = end_condition_body.split("case 'open_centrifuge5910_lid':", 1)[1].split("case ", 1)[0]
+    close_branch = end_condition_body.split("case 'close_centrifuge5910_lid'", 1)[1].split("case ", 1)[0]
+    press_branch = end_condition_body.split("case 'press_centrifuge5910_button':", 1)[1].split(
         "return False",
         1,
     )[0]
-    take_experimental_branch = check_body.split(
+    take_experimental_branch = end_condition_body.split(
         "case 'take_experimental_tube_from_centrifuge5910'",
         1,
     )[1].split("case ", 1)[0]
-    take_balance_branch = check_body.split("case 'take_balance_tube_from_centrifuge5910':", 1)[
+    take_balance_branch = end_condition_body.split("case 'take_balance_tube_from_centrifuge5910':", 1)[
         1
     ].split("case ", 1)[0]
 
-    assert "lid_jntlimit[0]" in open_branch
-    assert "lid_locked" in close_branch
+    assert "_lid_fully_open()" in open_branch
+    assert "_lid_closed_and_locked()" in close_branch
     assert "_centrifuge5910_button_touched" in press_branch
     assert "_tube_on_any_rack_slot(self.tube)" in take_experimental_branch
     assert "_tube_on_any_rack_slot(self.tube2)" in take_balance_branch
@@ -102,34 +102,50 @@ def test_centrifuge5910_check_uses_requested_atomic_success_conditions():
 
 def test_thermal_cycler_check_uses_requested_atomic_success_conditions():
     source = THERMAL_CYCLER_SOURCE.read_text(encoding="utf-8")
-    check_body = source.split("def check(self, prompt: str | None = None):", 1)[1].split(
-        "class ThermalCyclerManipulateExpert",
+    end_condition_body = source.split("def _atomic_end_condition(self, task: str) -> bool:", 1)[1].split(
+        "def record_atomic_start",
         1,
     )[0]
 
-    close_branch = check_body.split("case 'close_thermal_cycler_lid':", 1)[1].split("case ", 1)[0]
-    press_branch = check_body.split("case 'press_thermal_cycler_button':", 1)[1].split(
+    close_branch = end_condition_body.split("case 'close_thermal_cycler_lid':", 1)[1].split("case ", 1)[0]
+    press_branch = end_condition_body.split("case 'press_thermal_cycler_button':", 1)[1].split(
         "return False",
         1,
     )[0]
 
-    assert "lid_jntlimit[0]" in close_branch
-    assert "lever_jntlimit[0]" in close_branch
+    assert "_lid_closed()" in close_branch
     assert "_thermal_cycler_button_touched" in press_branch
 
 
 def test_thermal_cycler_knob_success_checks_state_not_exact_target():
     source = THERMAL_CYCLER_SOURCE.read_text(encoding="utf-8")
-    check_body = source.split("def check(self, prompt: str | None = None):", 1)[1].split(
-        "class ThermalCyclerManipulateExpert",
+    end_condition_body = source.split("def _atomic_end_condition(self, task: str) -> bool:", 1)[1].split(
+        "def record_atomic_start",
         1,
     )[0]
 
-    tighten_branch = check_body.split("case 'screw_tighten_knob':", 1)[1].split("case ", 1)[0]
-    loosen_branch = check_body.split("case 'screw_loosen_knob':", 1)[1].split("case ", 1)[0]
+    tighten_branch = end_condition_body.split("case 'screw_tighten_knob':", 1)[1].split("case ", 1)[0]
+    loosen_branch = end_condition_body.split("case 'screw_loosen_knob':", 1)[1].split("case ", 1)[0]
 
     assert "_knob_tightened()" in tighten_branch
     assert "_knob_loosened()" in loosen_branch
+
+
+def test_atomic_success_requires_recorded_start_and_end_conditions():
+    centrifuge_source = CENTRIFUGE_SOURCE.read_text(encoding="utf-8")
+    thermal_source = THERMAL_CYCLER_SOURCE.read_text(encoding="utf-8")
+    evaluator_source = Path("scripts/autobio_scripts/evaluator.py").read_text(encoding="utf-8")
+
+    for source in (centrifuge_source, thermal_source):
+        assert "self._atomic_start_conditions" in source
+        assert "def record_atomic_start(self, prompt: str | None = None):" in source
+        assert "def _atomic_start_condition(self, task: str) -> bool:" in source
+        assert "def _atomic_end_condition(self, task: str) -> bool:" in source
+        assert "self._atomic_start_satisfied(task) and self._atomic_end_condition(task)" in source
+        assert "self.record_atomic_start()" in source
+
+    assert "def record_prompt_start(prompt: str | None):" in evaluator_source
+    assert "record_prompt_start(prompt)" in evaluator_source
 
 
 def test_atomic_tasks_have_task_specific_arm_perturb_ranges():
@@ -148,6 +164,31 @@ def test_atomic_tasks_have_task_specific_arm_perturb_ranges():
     assert len(set(thermal_ranges.values())) == len(THERMAL_CYCLER_ATOMIC_TASKS)
     _assert_pairwise_disjoint(centrifuge_ranges)
     _assert_pairwise_disjoint(thermal_ranges)
+
+
+def test_long_tasks_use_first_atomic_task_arm_perturb_ranges():
+    centrifuge_source = CENTRIFUGE_SOURCE.read_text(encoding="utf-8")
+    thermal_source = THERMAL_CYCLER_SOURCE.read_text(encoding="utf-8")
+
+    centrifuge_mapping = _literal_assignment(
+        centrifuge_source,
+        "CENTRIFUGE5910_LONG_TASK_FIRST_ATOMIC_TASK",
+    )
+    thermal_mapping = _literal_assignment(
+        thermal_source,
+        "THERMAL_CYCLER_LONG_TASK_FIRST_ATOMIC_TASK",
+    )
+
+    assert centrifuge_mapping == {
+        "centrifuge5910_long_task_1": "open_centrifuge5910_lid",
+        "centrifuge5910_long_task_2": "press_centrifuge5910_button",
+    }
+    assert thermal_mapping == {
+        "thermal_cycler_long_task_1": "open_thermal_cycler_lid",
+        "thermal_cycler_long_task_2": "screw_loosen_knob",
+    }
+    assert "CENTRIFUGE5910_LONG_TASK_FIRST_ATOMIC_TASK.get(self.task, self.task)" in centrifuge_source
+    assert "THERMAL_CYCLER_LONG_TASK_FIRST_ATOMIC_TASK.get(self.task, self.task)" in thermal_source
 
 
 def test_dataset_generation_prints_atomic_task_success():

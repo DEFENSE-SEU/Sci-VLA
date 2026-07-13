@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import sys
 import types
 
@@ -11,6 +12,50 @@ def _import_transition_generation_with_stubs():
     import transition_generation
 
     return transition_generation
+
+
+def test_verified_planning_skips_llm_verifier_by_default():
+    transition_generation = _import_transition_generation_with_stubs()
+    _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan
+
+    requested_stages = []
+
+    def fake_request_json(**kwargs):
+        stage_name = kwargs["stage_name"]
+        requested_stages.append(stage_name)
+        if stage_name == "stage-1-planning":
+            return {
+                "commands": [{"op": "translate", "axis": "z", "distance_m": 0.1}],
+                "plan_steps": ["translate upward"],
+                "safety_notes": ["transition only"],
+                "final_target_qpos": [0, 0, 0, 0, 0, 0],
+                "final_target_gripper": 0,
+            }
+        if stage_name == "stage-1.5-plan-verifier":
+            raise AssertionError("verifier should be disabled by default")
+        raise AssertionError(f"unexpected stage: {stage_name}")
+
+    plan_obj, commands, verification = _generate_verified_transition_plan(
+        client=object(),
+        model_name="dummy-model",
+        planning_prompt="planner prompt",
+        task_prompt="target task",
+        front_image_data_url="front",
+        side_image_data_url="side",
+        target_front_image_data_url=None,
+        request_json_object=fake_request_json,
+    )
+
+    assert requested_stages == ["stage-1-planning"]
+    assert verification == {
+        "passed": True,
+        "issues": [],
+        "bad_command_indices": [],
+        "revision_instructions": [],
+        "verifier_enabled": False,
+    }
+    assert commands == [{"op": "translate", "axis": "z", "distance_m": 0.1}]
+    assert plan_obj["commands"] == commands
 
 
 def test_verified_planning_retries_with_bad_action_feedback():
@@ -81,6 +126,7 @@ def test_verified_planning_retries_with_bad_action_feedback():
         front_image_data_url="front",
         side_image_data_url="side",
         target_front_image_data_url=None,
+        verifier_enabled=True,
         max_plan_revisions=2,
         request_json_object=fake_request_json,
     )
@@ -90,6 +136,83 @@ def test_verified_planning_retries_with_bad_action_feedback():
     assert verification["passed"] is True
     assert commands[1]["distance_m"] == 0.1
     assert plan_obj["commands"] == commands
+
+
+def test_replace_execute_body_uses_rrt_for_final_target_restore():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    template_code = """
+class TransitionExpert:
+    def __init__(self):
+        pass
+
+    def execute(self):
+        pass
+""".strip()
+
+    code = transition_generation._replace_execute_body(
+        template_code,
+        execute_body_code='self.execute_transition_commands([{"op": "wait", "steps": 1}])',
+        final_target_qpos=[1, 2, 3, 4, 5, 6],
+        final_target_gripper=0.0,
+        include_final_restore=True,
+    )
+
+    assert "self.move_to_target_qpos_rrt(target_qpos)" in code
+    assert "self.move_to_target_qpos(target_qpos)" not in code
+
+
+def test_no_retrieval_without_final_restore_does_not_require_final_target_qpos():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    plan_target_qpos, plan_target_gripper = transition_generation._resolve_plan_restore_targets(
+        plan_obj={
+            "commands": [{"op": "translate", "axis": "z", "distance_m": 0.1}],
+            "plan_steps": ["translate upward"],
+            "final_target_qpos": None,
+            "final_target_gripper": 255,
+        },
+        target_arm_qpos=[0, 1, 2, 3, 4, 5],
+        target_gripper_state=None,
+        include_final_restore=False,
+    )
+
+    assert plan_target_qpos == [0, 1, 2, 3, 4, 5]
+    assert plan_target_gripper is None
+
+
+def test_no_retrieval_restore_schema_does_not_request_target_qpos():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    schema_text = transition_generation._format_restore_schema_fields(
+        no_retrieval=True,
+        target_arm_qpos=[0, 1, 2, 3, 4, 5],
+        target_gripper_state=None,
+    )
+
+    assert '"restore": false' in schema_text
+    assert "final_target_qpos" not in schema_text
+    assert "final_target_gripper" not in schema_text
+
+
+def test_null_final_target_qpos_still_fails_when_final_restore_is_required():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    try:
+        transition_generation._resolve_plan_restore_targets(
+            plan_obj={
+                "commands": [{"op": "translate", "axis": "z", "distance_m": 0.1}],
+                "plan_steps": ["translate upward"],
+                "final_target_qpos": None,
+            },
+            target_arm_qpos=[0, 1, 2, 3, 4, 5],
+            target_gripper_state=None,
+            include_final_restore=True,
+        )
+    except ValueError as exc:
+        assert "Stage-1 planning output missing valid final_target_qpos" in str(exc)
+    else:
+        raise AssertionError("expected null final_target_qpos to fail when final restore is required")
 
 
 def test_verified_planning_raises_after_revision_limit():
@@ -129,6 +252,7 @@ def test_verified_planning_raises_after_revision_limit():
             front_image_data_url="front",
             side_image_data_url="side",
             target_front_image_data_url=None,
+            verifier_enabled=True,
             max_plan_revisions=1,
             request_json_object=fake_request_json,
         )
@@ -212,39 +336,26 @@ def test_verifier_prompt_is_constraint_only_not_action_reasonableness():
     assert "Do not reject a plan because a gripper action seems unsafe" in prompt
 
 
-def test_workspace_bounds_are_in_verifier_prompt():
+def test_transition_generation_source_has_no_legacy_workspace_or_reachability_agent_args():
     transition_generation = _import_transition_generation_with_stubs()
-    workspace = {
-        "current_position_world": [0.1, 0.2, 0.3],
-        "min_world": [-0.2, -0.3, 0.05],
-        "max_world": [0.5, 0.6, 0.7],
-        "margin_m": 0.03,
-    }
+    source = Path("scripts/autobio_scripts/transition_generation.py").read_text(encoding="utf-8")
 
-    prompt = transition_generation._build_plan_verification_prompt(
-        task_prompt="move to next task",
-        planning_prompt="planner prompt",
-        plan_obj={
-            "commands": [{"op": "translate", "axis": "x", "distance_m": 0.1}],
-            "plan_steps": ["translate x"],
-            "final_target_qpos": [1, 2, 3, 4, 5, 6],
-            "final_target_gripper": 0.0,
-        },
-        commands=[{"op": "translate", "axis": "x", "distance_m": 0.1}],
-        ee_workspace_bounds=workspace,
-    )
-
-    assert "Conservative EE workspace boundary" in prompt
-    assert '"current_position_world": [0.1, 0.2, 0.3]' in prompt
-    assert "cumulative translate commands" in prompt
+    assert "allowed_apis" not in source
+    assert "_collect_execute_allowed_apis" not in source
+    assert "ee_workspace_bounds" not in source
+    assert "ee_reachability_checker" not in source
+    assert "_verify_commands_with_ee_workspace_bounds" not in source
+    assert "_format_ee_workspace_bounds_for_prompt" not in source
+    assert "_normalize_ee_workspace_bounds" not in source
+    assert "_merge_plan_verifications" not in source
+    assert "ee_workspace_bounds" not in transition_generation._build_plan_verification_prompt.__annotations__
 
 
-def test_reachability_checker_feedback_triggers_replanning():
+def test_generate_verified_transition_plan_no_longer_accepts_reachability_checker():
     transition_generation = _import_transition_generation_with_stubs()
     _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan
 
     planning_prompts = []
-    reachability_calls = []
 
     def fake_request_json(**kwargs):
         stage_name = kwargs["stage_name"]
@@ -253,22 +364,11 @@ def test_reachability_checker_feedback_triggers_replanning():
 
         if stage_name == "stage-1-planning":
             planning_prompts.append(prompt_text)
-            if len(planning_prompts) == 1:
-                return {
-                    "commands": [
-                        {"op": "translate", "axis": "x", "distance_m": 0.2, "steps": 50}
-                    ],
-                    "plan_steps": ["move x too far"],
-                    "final_target_qpos": [0, 0, 0, 0, 0, 0],
-                    "final_target_gripper": 0,
-                }
-            assert "Previous verifier feedback" in prompt_text
-            assert "max_reachable_distance_m=0.12" in prompt_text
             return {
                 "commands": [
-                    {"op": "translate", "axis": "x", "distance_m": 0.1, "steps": 50}
+                    {"op": "translate", "axis": "x", "distance_m": 0.2, "steps": 50}
                 ],
-                "plan_steps": ["move x within reach"],
+                "plan_steps": ["move x within single-command distance limit"],
                 "final_target_qpos": [0, 0, 0, 0, 0, 0],
                 "final_target_gripper": 0,
             }
@@ -277,31 +377,6 @@ def test_reachability_checker_feedback_triggers_replanning():
             return {"passed": True, "issues": [], "bad_command_indices": [], "revision_instructions": []}
 
         raise AssertionError(f"unexpected stage: {stage_name}")
-
-    def fake_reachability_checker(commands):
-        reachability_calls.append(commands)
-        if commands[0]["distance_m"] > 0.12:
-            return {
-                "passed": False,
-                "issues": [
-                    {
-                        "command_index": 0,
-                        "problem": (
-                            "Requested translate x +0.2m is unreachable from cumulative EE pose; "
-                            "max_reachable_distance_m=0.12."
-                        ),
-                        "required_fix": (
-                            "Regenerate this command with abs(distance_m) <= 0.12 "
-                            "or choose another axis/order."
-                        ),
-                    }
-                ],
-                "bad_command_indices": [0],
-                "revision_instructions": [
-                    "command_index=0 max_reachable_distance_m=0.12"
-                ],
-            }
-        return {"passed": True, "issues": [], "bad_command_indices": [], "revision_instructions": []}
 
     plan_obj, commands, verification = _generate_verified_transition_plan(
         client=object(),
@@ -313,76 +388,42 @@ def test_reachability_checker_feedback_triggers_replanning():
         target_front_image_data_url=None,
         max_plan_revisions=2,
         request_json_object=fake_request_json,
-        ee_reachability_checker=fake_reachability_checker,
     )
 
-    assert len(planning_prompts) == 2
-    assert len(reachability_calls) == 2
+    assert len(planning_prompts) == 1
     assert verification["passed"] is True
-    assert commands[0]["distance_m"] == 0.1
+    assert commands[0]["distance_m"] == 0.2
     assert plan_obj["commands"] == commands
 
 
-def test_planning_prompt_documents_directional_reachability_verifier():
+def test_planning_prompt_does_not_document_directional_reachability_verifier():
     transition_generation = _import_transition_generation_with_stubs()
-    _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan
+    prompt_text = transition_generation._format_ee_reachability_for_prompt(True)
 
-    captured_prompts = []
+    assert "max reachable distance for each translate axis/direction" not in prompt_text
+    assert "Do not use recovery behavior" not in prompt_text
+    assert "abs(distance_m) <= 0.25m" in prompt_text
 
-    def fake_request_json(**kwargs):
-        stage_name = kwargs["stage_name"]
-        content = kwargs["request_input"][0]["content"]
-        prompt_text = content[0]["text"]
-        if stage_name == "stage-1-planning":
-            captured_prompts.append(prompt_text)
-            return {
-                "commands": [{"op": "translate", "axis": "z", "distance_m": 0.05}],
-                "plan_steps": ["move z"],
-                "final_target_qpos": [0, 0, 0, 0, 0, 0],
-                "final_target_gripper": 0,
-            }
-        if stage_name == "stage-1.5-plan-verifier":
-            return {"passed": True, "issues": [], "bad_command_indices": [], "revision_instructions": []}
-        raise AssertionError(f"unexpected stage: {stage_name}")
 
-    _generate_verified_transition_plan(
-        client=object(),
-        model_name="dummy-model",
-        planning_prompt=(
-            "Verifier will compute the max reachable distance for each translate "
-            "axis/direction from the cumulative EE pose. Do not use recovery behavior."
-        ),
-        task_prompt="target task",
-        front_image_data_url="front",
-        side_image_data_url="side",
-        target_front_image_data_url=None,
-        max_plan_revisions=0,
-        request_json_object=fake_request_json,
+def test_transition_planning_prompt_limits_work_to_transition_not_next_task():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    prompt_text = transition_generation._build_transition_planning_prompt(
+        target_reference_text="the target task's retrieved initial front-view image.",
+        target_binding_text="The third image is the TARGET INITIAL FRONT reference view.",
+        calibration_prompt_text="calibration",
+        spatial_context_prompt_text="spatial context",
+        reachability_prompt_text="movement limits",
+        restore_schema_fields='"final_target_qpos": [0, 0, 0, 0, 0, 0],\n    "final_target_gripper": 0.0',
+        motion_constraint_rule="single-command limits only",
     )
 
-    assert "max reachable distance for each translate axis/direction" in captured_prompts[0]
-    assert "Do not use recovery behavior" in captured_prompts[0]
-
-
-def test_local_workspace_verifier_catches_cumulative_translate_out_of_bounds():
-    transition_generation = _import_transition_generation_with_stubs()
-    workspace = {
-        "current_position_world": [0.0, 0.0, 0.2],
-        "min_world": [-0.3, -0.3, 0.0],
-        "max_world": [0.3, 0.3, 0.6],
-    }
-
-    verification = transition_generation._verify_commands_with_ee_workspace_bounds(
-        [
-            {"op": "translate", "axis": "x", "distance_m": 0.25},
-            {"op": "translate", "axis": "x", "distance_m": 0.1},
-        ],
-        workspace,
-    )
-
-    assert verification["passed"] is False
-    assert verification["bad_command_indices"] == [1]
-    assert "outside conservative EE workspace" in verification["issues"][0]["problem"]
+    assert "retrieved starting pose for the next atomic task" in prompt_text
+    assert "Do not execute the next atomic task" in prompt_text
+    assert "opening or closing lids" in prompt_text
+    assert "pressing buttons" in prompt_text
+    assert "turning knobs" in prompt_text
+    assert "then target approach" not in prompt_text
 
 
 def test_verifier_result_ignores_action_reasonableness_issues_but_keeps_constraints():
@@ -417,3 +458,33 @@ def test_verifier_result_ignores_action_reasonableness_issues_but_keeps_constrai
     assert len(result["issues"]) == 1
     assert result["issues"][0]["command_index"] == 2
     assert result["revision_instructions"] == ["Split command 2 because distance_m exceeds 0.25."]
+
+
+def test_verifier_result_keeps_next_task_semantic_action_issues():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    result = transition_generation._normalize_plan_verification_result(
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "command_index": 3,
+                    "problem": "Command 3 executes the next atomic task by pressing buttons instead of only doing transition.",
+                    "required_fix": "Remove next-task semantic task action and keep transition-only movement.",
+                }
+            ],
+            "bad_command_indices": [3],
+            "revision_instructions": [
+                "Do not execute the next atomic task; remove semantic task action from command 3."
+            ],
+        },
+        command_count=5,
+    )
+
+    assert result["passed"] is False
+    assert result["bad_command_indices"] == [3]
+    assert len(result["issues"]) == 1
+    assert "next atomic task" in result["issues"][0]["problem"]
+    assert result["revision_instructions"] == [
+        "Do not execute the next atomic task; remove semantic task action from command 3."
+    ]

@@ -271,28 +271,33 @@ def build_atomic_task_success_summary(
             continue
 
         prompt_success_by_episode: dict[str, bool] = {}
-        for result in episode_results:
+        for result_position, result in enumerate(episode_results):
             if not isinstance(result, dict):
                 continue
             prompt = result.get("prompt")
             if prompt is None:
                 prompt = "__task__"
             prompt = str(prompt)
-            prompt_success_by_episode[prompt] = (
-                prompt_success_by_episode.get(prompt, False)
+            try:
+                prompt_index = int(result.get("prompt_index", result_position))
+            except (TypeError, ValueError):
+                prompt_index = result_position
+            prompt_key = f"prompt_index={prompt_index} {prompt}"
+            prompt_success_by_episode[prompt_key] = (
+                prompt_success_by_episode.get(prompt_key, False)
                 or bool(result.get("success", False))
             )
 
-        for prompt, prompt_success in prompt_success_by_episode.items():
-            if prompt not in summary:
-                summary[prompt] = {
+        for prompt_key, prompt_success in prompt_success_by_episode.items():
+            if prompt_key not in summary:
+                summary[prompt_key] = {
                     "success_count": 0,
                     "episode_count": 0,
                     "max_success": int(num_episodes),
                 }
-            summary[prompt]["episode_count"] += 1
+            summary[prompt_key]["episode_count"] += 1
             if prompt_success:
-                summary[prompt]["success_count"] += 1
+                summary[prompt_key]["success_count"] += 1
 
     return summary
 

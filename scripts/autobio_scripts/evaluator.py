@@ -1,6 +1,5 @@
 from collections import deque
 from contextlib import contextmanager
-import itertools
 import inspect
 from typing import Callable, TypeAlias
 
@@ -10,21 +9,10 @@ import pathlib #
 import imageio #
 import time #
 from datetime import datetime #
-from scipy.spatial.transform import Rotation as R
 from task import Task
 from serialize import STATE_SPEC
 
 Policy: TypeAlias = Callable[[dict], np.ndarray]
-
-
-UR5E_JOINT_NAMES = (
-    "/ur:shoulder_pan",
-    "/ur:shoulder_lift",
-    "/ur:elbow",
-    "/ur:wrist_1",
-    "/ur:wrist_2",
-    "/ur:wrist_3",
-)
 
 
 def _geom_name(model, geom_id: int) -> str:
@@ -65,273 +53,6 @@ def count_robot_object_collision_contacts(model, data) -> int:
             continue
         robot_object_pairs.add(tuple(sorted((geom1, geom2))))
     return len(robot_object_pairs)
-
-
-def _ur5e_joint_ids(model) -> list[int]:
-    try:
-        return [model.joint(name).id for name in UR5E_JOINT_NAMES]
-    except Exception:
-        shoulder_id = model.joint("/ur:shoulder_pan").id
-        return list(range(shoulder_id, shoulder_id + 6))
-
-
-def compute_ur5e_ee_workspace_static_bounds(
-    model,
-    data,
-    *,
-    site_name: str = "/ur:2f85:pinch",
-    samples_per_joint: int = 5,
-    quantile: float = 0.02,
-    margin_m: float = 0.03,
-) -> dict:
-    site_id = model.site(site_name).id
-    joint_ids = _ur5e_joint_ids(model)
-    qpos_addrs = [int(model.jnt_qposadr[joint_id]) for joint_id in joint_ids]
-    current_qpos = np.asarray(data.qpos, dtype=np.float64).copy()
-
-    joint_samples = []
-    for joint_id, qpos_addr in zip(joint_ids, qpos_addrs):
-        current_value = float(current_qpos[qpos_addr])
-        limited = bool(getattr(model, "jnt_limited", np.zeros(model.njnt, dtype=bool))[joint_id])
-        if limited:
-            low, high = [float(v) for v in model.jnt_range[joint_id]]
-        else:
-            low, high = current_value - np.pi, current_value + np.pi
-        if not np.isfinite(low) or not np.isfinite(high) or low >= high:
-            low, high = current_value - np.pi, current_value + np.pi
-        joint_samples.append(np.linspace(low, high, max(2, int(samples_per_joint))))
-
-    sim_data = mujoco.MjData(model)
-    sim_data.qpos[:] = data.qpos
-    sim_data.qvel[:] = data.qvel
-    if getattr(sim_data, "ctrl", None) is not None and getattr(data, "ctrl", None) is not None:
-        sim_data.ctrl[:] = data.ctrl
-
-    positions = []
-    for sample in itertools.product(*joint_samples):
-        sim_data.qpos[qpos_addrs] = sample
-        sim_data.qvel[:] = 0.0
-        mujoco.mj_forward(model, sim_data)
-        pos = np.asarray(sim_data.site_xpos[site_id], dtype=np.float64)
-        if np.isfinite(pos).all():
-            positions.append(pos.copy())
-
-    if not positions:
-        mujoco.mj_forward(model, data)
-        current_pos = np.asarray(data.site_xpos[site_id], dtype=np.float64)
-        return {
-            "min_world": (current_pos - 0.05).round(4).tolist(),
-            "max_world": (current_pos + 0.05).round(4).tolist(),
-            "margin_m": float(margin_m),
-            "source": "current_position_fallback",
-        }
-
-    position_arr = np.asarray(positions, dtype=np.float64)
-    q = min(max(float(quantile), 0.0), 0.2)
-    min_world = np.quantile(position_arr, q, axis=0) + float(margin_m)
-    max_world = np.quantile(position_arr, 1.0 - q, axis=0) - float(margin_m)
-
-    mujoco.mj_forward(model, data)
-    current_pos = np.asarray(data.site_xpos[site_id], dtype=np.float64)
-    pad = 0.02
-    min_world = np.minimum(min_world, current_pos - pad)
-    max_world = np.maximum(max_world, current_pos + pad)
-
-    return {
-        "min_world": min_world.round(4).tolist(),
-        "max_world": max_world.round(4).tolist(),
-        "margin_m": float(margin_m),
-        "source": f"fk_joint_grid_{samples_per_joint}^6_quantile_{q}",
-    }
-
-
-def attach_current_ee_position_to_workspace_bounds(
-    model,
-    data,
-    static_bounds: dict,
-    *,
-    site_name: str = "/ur:2f85:pinch",
-) -> dict:
-    site_id = model.site(site_name).id
-    mujoco.mj_forward(model, data)
-    current_pos = np.asarray(data.site_xpos[site_id], dtype=np.float64)
-    return {
-        **static_bounds,
-        "current_position_world": current_pos.round(4).tolist(),
-    }
-
-
-def _quat_angle_error_rad(q1, q2) -> float:
-    q1 = np.asarray(q1, dtype=np.float64).reshape(4)
-    q2 = np.asarray(q2, dtype=np.float64).reshape(4)
-    q1_norm = np.linalg.norm(q1)
-    q2_norm = np.linalg.norm(q2)
-    if q1_norm <= 0.0 or q2_norm <= 0.0:
-        return float("inf")
-    dot = abs(float(np.dot(q1 / q1_norm, q2 / q2_norm)))
-    return float(2.0 * np.arccos(np.clip(dot, 0.0, 1.0)))
-
-
-def _rotate_wxyz_quat(cur_quat, axis: str, angle_deg: float) -> np.ndarray:
-    cur_quat = np.asarray(cur_quat, dtype=np.float64).reshape(4)
-    cur_quat_xyzw = np.array([cur_quat[1], cur_quat[2], cur_quat[3], cur_quat[0]], dtype=np.float64)
-    target_quat_xyzw = (R.from_euler(axis, float(angle_deg), degrees=True) * R.from_quat(cur_quat_xyzw)).as_quat()
-    return np.array(
-        [target_quat_xyzw[3], target_quat_xyzw[0], target_quat_xyzw[1], target_quat_xyzw[2]],
-        dtype=np.float64,
-    )
-
-
-def build_ur5e_directional_reachability_checker(
-    model,
-    data,
-    *,
-    site_name: str = "/ur:2f85:pinch",
-    base_name: str = "/ur:base",
-    max_translate_m: float = 0.25,
-    binary_iterations: int = 10,
-    position_tolerance_m: float = 0.03,
-    orientation_tolerance_rad: float = 0.35,
-) -> Callable[[list[dict]], dict]:
-    from kinematics import FK, IK
-
-    site_id = model.site(site_name).id
-    joint_start = model.joint("/ur:shoulder_pan").qposadr.item()
-    jnt_span = list(range(joint_start, joint_start + 6))
-    axis_to_delta = {
-        "x": np.array([1.0, 0.0, 0.0], dtype=np.float64),
-        "y": np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        "z": np.array([0.0, 0.0, 1.0], dtype=np.float64),
-    }
-
-    def current_site_pose() -> tuple[np.ndarray, np.ndarray]:
-        mujoco.mj_forward(model, data)
-        mat = data.site_xmat[site_id]
-        quat = np.zeros(4)
-        mujoco.mju_mat2Quat(quat, mat)
-        return np.asarray(data.site_xpos[site_id], dtype=np.float64).copy(), quat
-
-    def solve_pose(ik, fk, target_pos, target_quat, seed_qpos):
-        try:
-            ik.initial_qpos = np.asarray(seed_qpos, dtype=np.float64).copy()
-            qpos = np.asarray(ik.solve(target_pos, target_quat), dtype=np.float64).reshape(-1)
-            solved_pose = fk.forward(qpos)
-        except Exception as exc:
-            return False, None, {
-                "error": str(exc),
-                "position_error_m": None,
-                "orientation_error_rad": None,
-            }
-
-        position_error = float(np.linalg.norm(np.asarray(solved_pose.pos) - np.asarray(target_pos)))
-        orientation_error = _quat_angle_error_rad(solved_pose.quat, target_quat)
-        passed = (
-            np.isfinite(qpos).all()
-            and position_error <= float(position_tolerance_m)
-            and orientation_error <= float(orientation_tolerance_rad)
-        )
-        return passed, qpos, {
-            "position_error_m": round(position_error, 6),
-            "orientation_error_rad": round(orientation_error, 6),
-        }
-
-    def checker(commands: list[dict]) -> dict:
-        ik = IK(6, model, data, base_name, site_name)
-        fk = FK(6, model, data, base_name, site_name)
-        pos, quat = current_site_pose()
-        qpos_seed = np.asarray(data.qpos[jnt_span], dtype=np.float64).copy()
-        issues = []
-        bad_indices = []
-        revision_instructions = []
-
-        for command_index, command in enumerate(commands):
-            op = command.get("op")
-            if op == "translate":
-                axis = str(command.get("axis", "")).lower()
-                if axis not in axis_to_delta:
-                    continue
-                requested = float(command.get("distance_m", 0.0))
-                requested_abs = abs(requested)
-                if requested_abs <= 0.0:
-                    continue
-                requested_abs = min(requested_abs, float(max_translate_m))
-                direction = axis_to_delta[axis] * (1.0 if requested >= 0.0 else -1.0)
-                target_pos = pos + direction * requested_abs
-                reachable, solved_qpos, diagnostic = solve_pose(ik, fk, target_pos, quat, qpos_seed)
-                if reachable:
-                    pos = target_pos
-                    qpos_seed = solved_qpos
-                    continue
-
-                lo = 0.0
-                hi = requested_abs
-                best_diagnostic = diagnostic
-                for _ in range(max(1, int(binary_iterations))):
-                    mid = (lo + hi) / 2.0
-                    mid_pos = pos + direction * mid
-                    mid_reachable, mid_qpos, mid_diagnostic = solve_pose(ik, fk, mid_pos, quat, qpos_seed)
-                    if mid_reachable:
-                        lo = mid
-                        best_diagnostic = mid_diagnostic
-                    else:
-                        hi = mid
-
-                max_reachable = round(max(0.0, lo), 4)
-                signed_request = round(float(requested), 4)
-                issues.append(
-                    {
-                        "command_index": command_index,
-                        "problem": (
-                            f"Requested translate {axis} {signed_request:+.4f}m is unreachable from "
-                            "the cumulative EE pose; "
-                            f"max_reachable_distance_m={max_reachable}. "
-                            f"diagnostic={best_diagnostic}."
-                        ),
-                        "required_fix": (
-                            "Regenerate this command with abs(distance_m) <= "
-                            f"{max_reachable} or choose another axis/order. Do not use recovery."
-                        ),
-                    }
-                )
-                bad_indices.append(command_index)
-                revision_instructions.append(
-                    f"command_index={command_index} max_reachable_distance_m={max_reachable}; "
-                    "Regenerate this translate command within the reported reachable distance or choose another axis/order. "
-                    "Do not use recovery."
-                )
-                break
-
-            if op == "rotate":
-                axis = str(command.get("axis", "")).lower()
-                if axis not in {"x", "y", "z"}:
-                    continue
-                target_quat = _rotate_wxyz_quat(quat, axis, float(command.get("angle_deg", 0.0)))
-                reachable, solved_qpos, diagnostic = solve_pose(ik, fk, pos, target_quat, qpos_seed)
-                if reachable:
-                    quat = target_quat
-                    qpos_seed = solved_qpos
-                    continue
-                issues.append(
-                    {
-                        "command_index": command_index,
-                        "problem": f"Requested rotate {axis} is unreachable from the cumulative EE pose; diagnostic={diagnostic}.",
-                        "required_fix": "Regenerate this rotate command or choose another axis/order.",
-                    }
-                )
-                bad_indices.append(command_index)
-                revision_instructions.append(
-                    f"command_index={command_index} rotate command is unreachable; choose another axis/order."
-                )
-                break
-
-        return {
-            "passed": len(issues) == 0,
-            "issues": issues,
-            "bad_command_indices": bad_indices,
-            "revision_instructions": revision_instructions,
-        }
-
-    return checker
 
 
 def capture_prompt_initial_state(data, state_indices, action_indices) -> dict:
@@ -893,6 +614,11 @@ class Evaluator:
                 return bool(check_func())
             return None
 
+        def record_prompt_start(prompt: str | None):
+            record_func = getattr(self.task, "record_atomic_start", None)
+            if callable(record_func):
+                record_func(prompt)
+
         # Let the scene settle for 2 seconds of simulation time before the first action.
         settle_steps = max(1, int(round(settle_duration / self.model.opt.timestep)))
         for _ in range(settle_steps):
@@ -931,6 +657,7 @@ class Evaluator:
             
         
         if prompts is None:
+            record_prompt_start(None)
             healthy, prompt_success = run_prompt(None, time_limit)
             task_success = bool(prompt_success) if prompt_success is not None else (self.task.check() if healthy else False)
             atomic_task_results.append(
@@ -1042,25 +769,6 @@ class Evaluator:
                             self.data.qpos[:] = original_qpos
                             mujoco.mj_forward(self.model, self.data)
 
-                    if not hasattr(self, "_ur5e_ee_workspace_static_bounds"):
-                        self._ur5e_ee_workspace_static_bounds = compute_ur5e_ee_workspace_static_bounds(
-                            self.model,
-                            self.data,
-                        )
-                        print(
-                            "[Transition] Conservative EE workspace static bounds: "
-                            f"{self._ur5e_ee_workspace_static_bounds}"
-                        )
-                    ee_workspace_bounds = attach_current_ee_position_to_workspace_bounds(
-                        self.model,
-                        self.data,
-                        self._ur5e_ee_workspace_static_bounds,
-                    )
-                    ee_reachability_checker = build_ur5e_directional_reachability_checker(
-                        self.model,
-                        self.data,
-                    )
-
                     transition_code_generation(
                         target_prompt,
                         no_planning=no_planning,
@@ -1070,8 +778,6 @@ class Evaluator:
                         target_top_k=3,
                         qpos_path_validator=qpos_path_validator,
                         target_ee_position_resolver=target_ee_position_resolver,
-                        ee_workspace_bounds=ee_workspace_bounds,
-                        ee_reachability_checker=ee_reachability_checker,
                     )
                     transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
                     transition_infer_total += transition_infer_elapsed
@@ -1180,6 +886,7 @@ class Evaluator:
                 attempt_index = attempt_counts[prompt_index]
                 print(f"Executing prompt: {prompt} (attempt {attempt_index + 1})")
                 self.task_info['prefix'] = prompt
+                record_prompt_start(prompt)
                 prompt_initial_state = capture_prompt_initial_state(
                     self.data,
                     self.task_info["state_indices"],
@@ -1331,6 +1038,7 @@ class Evaluator:
             prompt = prompts[0]
             print(f"Executing prompt: {prompt}")
             self.task_info['prefix'] = prompt
+            record_prompt_start(prompt)
             healthy, local_prompt_success = run_prompt(prompt, time_limit)
             atomic_task_results.append(
                 {

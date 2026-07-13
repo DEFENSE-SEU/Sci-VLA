@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from pathlib import Path
 import json
+import re
 
 import numpy as np
 
@@ -126,6 +127,34 @@ def test_execute_interpolated_joint_path_drives_target_controls():
     assert steps == 8
     assert task.step_count == 8
     np.testing.assert_allclose(data.ctrl[:6], np.ones(6))
+
+
+def test_transition_template_commands_use_rrt_motion_without_changing_move_to():
+    source = Path("scripts/autobio_scripts/transition_template.py").read_text(encoding="utf-8")
+
+    assert "def move_to_rrt(" in source
+    assert "def move_to_target_qpos_rrt(" in source
+
+    translate_body = re.search(
+        r"def translate_ee\(.*?\):\n(?P<body>.*?)(?=\n    def )",
+        source,
+        flags=re.DOTALL,
+    ).group("body")
+    rotate_body = re.search(
+        r"def rotate_ee\(.*?\):\n(?P<body>.*?)(?=\n    def )",
+        source,
+        flags=re.DOTALL,
+    ).group("body")
+    move_to_body = re.search(
+        r"def move_to\(.*?\):\n(?P<body>.*?)(?=\n    def )",
+        source,
+        flags=re.DOTALL,
+    ).group("body")
+
+    assert "self.move_to_rrt(" in translate_body
+    assert "self.move_to_rrt(" in rotate_body
+    assert "self.interpolate(" in move_to_body
+    assert "self.move_to_rrt(" not in move_to_body
 
 
 def test_random_future_task_qpos_samples_only_from_matched_task(tmp_path):
