@@ -763,11 +763,7 @@ class Centrifuge5910Manipulate(Task):
             case 'take_balance_tube_from_centrifuge5910':
                 return self._tube_in_any_slot(self.tube2)
             case 'press_centrifuge5910_button':
-                return (
-                    self._lid_closed_and_locked()
-                    and self._tube_in_any_slot(self.tube)
-                    and self._tube_in_any_slot(self.tube2)
-                )
+                return not self._centrifuge5910_button_touched
         return False
 
     def _atomic_end_condition(self, task: str) -> bool:

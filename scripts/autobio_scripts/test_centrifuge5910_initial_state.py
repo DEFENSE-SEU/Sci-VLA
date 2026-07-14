@@ -148,6 +148,38 @@ def test_atomic_success_requires_recorded_start_and_end_conditions():
     assert "record_prompt_start(prompt)" in evaluator_source
 
 
+def test_press_button_start_condition_only_requires_button_not_pressed():
+    centrifuge_source = CENTRIFUGE_SOURCE.read_text(encoding="utf-8")
+    thermal_source = THERMAL_CYCLER_SOURCE.read_text(encoding="utf-8")
+
+    centrifuge_start_body = centrifuge_source.split(
+        "def _atomic_start_condition(self, task: str) -> bool:",
+        1,
+    )[1].split("def _atomic_end_condition", 1)[0]
+    thermal_start_body = thermal_source.split(
+        "def _atomic_start_condition(self, task: str) -> bool:",
+        1,
+    )[1].split("def _atomic_end_condition", 1)[0]
+
+    centrifuge_press_branch = centrifuge_start_body.split(
+        "case 'press_centrifuge5910_button':",
+        1,
+    )[1].split("return False", 1)[0]
+    thermal_press_branch = thermal_start_body.split(
+        "case 'press_thermal_cycler_button':",
+        1,
+    )[1].split("return False", 1)[0]
+
+    assert "return not self._centrifuge5910_button_touched" in centrifuge_press_branch
+    assert "_lid_closed_and_locked()" not in centrifuge_press_branch
+    assert "_tube_in_any_slot" not in centrifuge_press_branch
+
+    assert "return not self._thermal_cycler_button_touched" in thermal_press_branch
+    assert "_plate_near" not in thermal_press_branch
+    assert "_lid_closed()" not in thermal_press_branch
+    assert "_knob_tightened()" not in thermal_press_branch
+
+
 def test_atomic_tasks_have_task_specific_arm_perturb_ranges():
     centrifuge_ranges = _literal_assignment(
         CENTRIFUGE_SOURCE.read_text(encoding="utf-8"),

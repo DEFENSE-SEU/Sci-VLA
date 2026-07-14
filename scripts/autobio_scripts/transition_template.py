@@ -209,7 +209,7 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        self.execute_transition_commands([{"op": "translate", "axis": "z", "distance_m": 0.05, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.1, "steps": 100}, {"op": "translate", "axis": "x", "distance_m": -0.08, "steps": 100}, {"op": "open_gripper", "delay": 100}, {"op": "wait", "steps": 500}, {"op": "close_gripper", "delay": 100}])
+        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 180}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 180}, {"op": "translate", "axis": "y", "distance_m": 0.0988, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.0872, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.0165, "steps": 80}])
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path

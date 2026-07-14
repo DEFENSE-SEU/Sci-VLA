@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from evaluate import build_atomic_task_success_summary
+from evaluate import build_atomic_task_success_summary, build_complete_episode_success_summary
 
 
 def test_atomic_task_success_summary_keeps_duplicate_prompt_indices_separate():
@@ -36,3 +36,16 @@ def test_atomic_task_success_summary_keeps_duplicate_prompt_indices_separate():
     ]
     assert summary["prompt_index=3 close the lid of the centrifuge5910"]["success_count"] == 1
     assert summary["prompt_index=7 close the lid of the centrifuge5910"]["success_count"] == 0
+
+
+def test_complete_episode_success_summary_uses_num_episodes_as_denominator():
+    summary = build_complete_episode_success_summary(
+        [1.0, 0.0, True],
+        num_episodes=5,
+    )
+
+    assert summary == {
+        "success_count": 2,
+        "max_success": 5,
+        "evaluated_episodes": 3,
+    }

@@ -315,6 +315,22 @@ def print_atomic_task_success_summary(summary: dict[str, dict[str, int]]):
         )
 
 
+def build_complete_episode_success_summary(success_results: list[float], num_episodes: int) -> dict[str, int]:
+    return {
+        "success_count": int(sum(1 for result in success_results if bool(result))),
+        "max_success": int(num_episodes),
+        "evaluated_episodes": int(len(success_results)),
+    }
+
+
+def print_complete_episode_success_summary(summary: dict[str, int]):
+    print(
+        "[EpisodeSuccess] Complete episode success count: "
+        f"{summary['success_count']}/{summary['max_success']} "
+        f"(evaluated_episodes={summary['evaluated_episodes']})"
+    )
+
+
 def _transition_collision_index(raw_key) -> int | None:
     text = str(raw_key)
     if text.startswith("transition_"):
@@ -792,6 +808,8 @@ if __name__ == "__main__":
                     print_running_average_timing(episode_timings)
 
     results = success_results
+    complete_episode_summary = build_complete_episode_success_summary(success_results, args.num_episodes)
+    print_complete_episode_success_summary(complete_episode_summary)
     if args.num_episodes != 1 and len(episode_timings) > 0:
         print("[TimingAvg] Final average over all episodes:")
         print_running_average_timing(episode_timings)

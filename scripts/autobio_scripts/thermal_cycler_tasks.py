@@ -538,11 +538,7 @@ class ThermalCyclerManipulate(Task):
             case 'screw_loosen_knob':
                 return self._lid_closed() and self._knob_tightened()
             case 'press_thermal_cycler_button':
-                return (
-                    self._plate_near(PCR_PLATE_THERMAL_TARGET_POS + PCR_PLATE_SEATED_OFFSET)
-                    and self._lid_closed()
-                    and self._knob_tightened()
-                )
+                return not self._thermal_cycler_button_touched
         return False
 
     def _atomic_end_condition(self, task: str) -> bool:

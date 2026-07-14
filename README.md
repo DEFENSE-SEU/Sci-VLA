@@ -229,9 +229,9 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_po
 
 ```bash
 python -m vllm.entrypoints.openai.api_server \
-  --model ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B \
-  --served-model-name qwen3.5-9b \
-  --host 127.0.0.1 \
+  --model xxx \
+  --served-model-name qwen3.5-27b \
+  --host 192.168.124.33 \
   --port 9000
 ```
 
@@ -243,15 +243,15 @@ python ./scripts/autobio_scripts/evaluate.py \
   --task "thermal_cycler_long_task_1" \
   --time_limit 30 \
   --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
-  --llm-base-url http://127.0.0.1:9000/v1 \
-  --llm-model-name qwen3.5-9b \
+  --experiment-mode full \
+  --llm-base-url http://192.168.124.33:9000/v1 \
+  --llm-model-name qwen3.5-27b \
   --llm-api-key EMPTY \
   --llm-temperature 0.2 \
   --llm-top-p 0.9 \
   --llm-max-tokens 4096 \
   --llm-max-attempts 3 \
-  --llm-timeout 120 \
-  --experiment-mode full
+  --llm-timeout 120
 ```
 
 
