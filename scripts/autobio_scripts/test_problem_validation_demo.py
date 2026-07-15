@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import sys
 from argparse import Namespace
 from collections import deque
@@ -165,6 +166,31 @@ def test_ordinary_prompt_still_stops_on_first_success():
     assert timing["atomic_task_results"][0]["success"] is True
 
 
+def test_ordinary_timeout_still_uses_final_predicate_state():
+    evaluator, policy, events, _data = _make_fake_evaluator(
+        lambda _prompt, current_time: current_time == 2.0
+    )
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=3.0,
+        prompts=["ordinary timeout prompt"],
+        control_fps=1.0,
+        intervention_mode="timeout",
+    )
+
+    assert not success
+    assert events["policy_prompts"] == ["ordinary timeout prompt"] * 3
+    assert timing["atomic_task_results"] == [
+        {
+            "prompt_index": 0,
+            "prompt": "ordinary timeout prompt",
+            "success": False,
+            "attempt_index": 0,
+        }
+    ]
+
+
 def test_ordinary_multi_prompt_path_still_runs_each_prompt_once(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     evaluator, policy, events, _data = _make_fake_evaluator(
@@ -185,6 +211,64 @@ def test_ordinary_multi_prompt_path_still_runs_each_prompt_once(monkeypatch, tmp
     assert events["policy_prompts"] == ["first ordinary prompt", "second ordinary prompt"]
     assert [result["success"] for result in timing["atomic_task_results"]] == [True, True]
     assert events["finishes"] == events["render_finishes"] == 1
+
+
+def test_demo_forces_non_timeout_tail_and_stops_inside_action_chunk(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    config = replace(
+        ProblemValidationDemoConfig(dataset_root=tmp_path),
+        post_success_seconds=2.5,
+        interpolation_steps=1,
+    )
+    evaluator, _default_policy, events, data = _make_fake_evaluator(
+        lambda prompt, current_time: (
+            current_time == 2.0
+            if prompt == config.prompts[0]
+            else current_time == 7.0
+        )
+    )
+    sampled = SampledRobotState(
+        state=np.arange(1.0, 8.0),
+        episode_index=7,
+        episode_length=10,
+        prefix_frame_count=3,
+        frame_index=2,
+        frame_ratio=0.2,
+        task=config.prompts[1],
+        dataset_root=tmp_path,
+    )
+    monkeypatch.setattr(evaluator_module, "sample_problem_validation_state", lambda *_: sampled)
+    monkeypatch.setattr(
+        evaluator_module,
+        "count_robot_object_collision_contacts",
+        lambda _model, _data: 0,
+    )
+
+    def chunked_policy(_observation):
+        events["policy_prompts"].append(evaluator.task_info["prefix"])
+        return np.zeros((8, 7), dtype=np.float64)
+
+    success, timing = evaluator.evaluate(
+        chunked_policy,
+        time_limit=8.0,
+        prompts=list(config.prompts),
+        control_fps=1.0,
+        intervention_mode="timeout",
+        problem_validation_demo_config=config,
+    )
+
+    output = capsys.readouterr().out
+    assert success
+    assert events["policy_prompts"] == list(config.prompts)
+    assert [result["success"] for result in timing["atomic_task_results"]] == [True, True]
+    assert events["videos"] == [(True, config.video_filename_prefix, 5)]
+    assert data.time == 7.0
+    tail_elapsed = float(re.search(r"tail_complete_time=.* elapsed=([0-9.]+)", output).group(1))
+    assert tail_elapsed >= config.post_success_seconds
+    assert tail_elapsed - config.post_success_seconds <= 1.0
 
 
 def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, capsys, tmp_path):
@@ -354,6 +438,67 @@ def test_demo_settle_failure_uses_demo_video_name_once(tmp_path):
     assert timing["atomic_task_results"] == []
     assert events["finishes"] == events["render_finishes"] == 1
     assert events["videos"] == [(False, config.video_filename_prefix, 0)]
+
+
+def test_demo_settle_failure_attempts_all_cleanup_when_finish_raises(tmp_path):
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    evaluator, policy, events, data = _make_fake_evaluator(lambda _prompt, _time: False)
+    data.warning.number[:] = 1
+    finish_error = RuntimeError("finish exploded")
+
+    def fail_finish():
+        events["finishes"] += 1
+        raise finish_error
+
+    evaluator.task.finish = fail_finish
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=10.0,
+        prompts=list(config.prompts),
+        control_fps=1.0,
+        problem_validation_demo_config=config,
+    )
+
+    assert not success
+    assert timing["atomic_task_results"] == []
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 0)]
+
+
+def test_demo_policy_error_records_failed_attempt_and_preserves_error(capsys, tmp_path):
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    evaluator, _policy, events, _data = _make_fake_evaluator(lambda _prompt, _time: False)
+    policy_error = RuntimeError("policy exploded")
+    cleanup_error = RuntimeError("finish exploded")
+
+    def fail_finish():
+        events["finishes"] += 1
+        raise cleanup_error
+
+    evaluator.task.finish = fail_finish
+
+    def fail_policy(_observation):
+        raise policy_error
+
+    with pytest.raises(RuntimeError) as exc_info:
+        evaluator.evaluate(
+            fail_policy,
+            time_limit=10.0,
+            prompts=list(config.prompts),
+            control_fps=1.0,
+            problem_validation_demo_config=config,
+        )
+
+    output = capsys.readouterr().out
+    assert exc_info.value is policy_error
+    assert events["prompt_starts"] == [config.prompts[0]]
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 0)]
+    assert (
+        "prompt_index=0 attempt_index=0 healthy=False success=False "
+        f"prompt={config.prompts[0]!r}"
+    ) in output
 
 
 def _write_jsonl(path: Path, records: list[dict]):

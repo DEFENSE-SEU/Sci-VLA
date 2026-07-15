@@ -621,6 +621,28 @@ class Evaluator:
                 f"transition ratio: {timing['transition_ratio']:.2f}%"
             )
 
+        def finalize_problem_validation_demo(success: bool):
+            cleanup_error = None
+            try:
+                self.task.finish()
+            except BaseException as exc:
+                cleanup_error = exc
+            try:
+                self.render_finish()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            try:
+                self.save_video(
+                    success,
+                    filename_override=config.video_filename_prefix,
+                    action_count=executed_action_count,
+                )
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            return cleanup_error
+
         def step():
             """Step the task, return True if simulation is healthy."""
             try:
@@ -667,17 +689,14 @@ class Evaluator:
         for _ in range(settle_steps):
             healthy = step()
             if not healthy:
-                self.task.finish()
-                self.render_finish()
-                self.save_video(
-                    False,
-                    filename_override=(
-                        problem_validation_demo_config.video_filename_prefix
-                        if problem_validation_demo_config is not None
-                        else None
-                    ),
-                    action_count=executed_action_count,
-                )
+                if problem_validation_demo_config is not None:
+                    cleanup_error = finalize_problem_validation_demo(False)
+                    if cleanup_error is not None:
+                        print(f"[ProblemValidationDemo] cleanup_error={cleanup_error}")
+                else:
+                    self.task.finish()
+                    self.render_finish()
+                    self.save_video(False, action_count=executed_action_count)
                 print_timing_summary()
                 return False, build_timing_stats()
         # self._capture_replay_frame()
@@ -686,6 +705,7 @@ class Evaluator:
             prompt: str | None,
             current_time_limit: float,
             post_success_seconds: float = 0.0,
+            force_non_timeout: bool = False,
         ):
             nonlocal executed_action_count
             start_time = self.data.time
@@ -694,9 +714,12 @@ class Evaluator:
                 time_limit=current_time_limit,
                 post_success_seconds=post_success_seconds,
             )
+            use_non_timeout_controller = (
+                force_non_timeout or effective_intervention_mode == "non_timeout"
+            )
 
             def prompt_should_continue():
-                if effective_intervention_mode == "timeout":
+                if not use_non_timeout_controller:
                     return (self.data.time - start_time) < current_time_limit
                 return controller.should_continue(self.data.time)
 
@@ -726,7 +749,7 @@ class Evaluator:
                                 "[ProblemValidationDemo] "
                                 f"first_success_time={controller.success_time:.6f}"
                             )
-                    if tail_complete and effective_intervention_mode == "non_timeout":
+                    if tail_complete and use_non_timeout_controller:
                         if post_success_seconds > 0.0:
                             print(
                                 "[ProblemValidationDemo] "
@@ -744,28 +767,32 @@ class Evaluator:
 
             def run_demo_prompt(prompt: str, post_success_seconds: float):
                 prompt_index = len(atomic_task_results)
+                atomic_result = {
+                    "prompt_index": int(prompt_index),
+                    "prompt": prompt,
+                    "success": False,
+                    "attempt_index": 0,
+                }
+                atomic_task_results.append(atomic_result)
                 print(f"[ProblemValidationDemo] prompt_index={prompt_index} prompt={prompt!r}")
                 self.task_info["prefix"] = prompt
-                record_prompt_start(prompt)
-                healthy, local_success = run_prompt(
-                    prompt,
-                    time_limit,
-                    post_success_seconds=post_success_seconds,
-                )
-                prompt_succeeded = bool(local_success)
-                atomic_task_results.append(
-                    {
-                        "prompt_index": int(prompt_index),
-                        "prompt": prompt,
-                        "success": prompt_succeeded,
-                        "attempt_index": 0,
-                    }
-                )
-                print(
-                    f"[ProblemValidationDemo] prompt_index={prompt_index} "
-                    f"healthy={bool(healthy)} success={prompt_succeeded}"
-                )
-                return bool(healthy), prompt_succeeded
+                healthy = False
+                try:
+                    record_prompt_start(prompt)
+                    healthy, local_success = run_prompt(
+                        prompt,
+                        time_limit,
+                        post_success_seconds=post_success_seconds,
+                        force_non_timeout=True,
+                    )
+                    atomic_result["success"] = bool(local_success)
+                    return bool(healthy), bool(local_success)
+                finally:
+                    print(
+                        f"[ProblemValidationDemo] prompt_index={prompt_index} "
+                        f"attempt_index=0 healthy={bool(healthy)} "
+                        f"success={atomic_result['success']} prompt={prompt!r}"
+                    )
 
             def restore_demo_state(sampled_state, interpolation_steps: int):
                 nonlocal transition_total, transition_count
@@ -830,25 +857,7 @@ class Evaluator:
                 pending_error = exc
                 pending_traceback = exc.__traceback__
             finally:
-                cleanup_error = None
-                try:
-                    self.task.finish()
-                except BaseException as exc:
-                    cleanup_error = exc
-                try:
-                    self.render_finish()
-                except BaseException as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
-                try:
-                    self.save_video(
-                        demo_success,
-                        filename_override=config.video_filename_prefix,
-                        action_count=executed_action_count,
-                    )
-                except BaseException as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
+                cleanup_error = finalize_problem_validation_demo(demo_success)
                 print_timing_summary()
                 if pending_error is None and cleanup_error is not None:
                     pending_error = cleanup_error
