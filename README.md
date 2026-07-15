@@ -174,8 +174,10 @@ python ./scripts/autobio_scripts/evaluate.py \
 ```
 
 The demo executes the fixed prompts `open the lid of the thermal cycler` and
-`place pcrPlate into the thermal cycler`. The seed controls trajectory and frame
-sampling. Front- and left-view MP4s are saved under `videos/` with the fixed
+`place pcrPlate into the thermal cycler`. The same `--seed` reproduces the same
+placement trajectory and frame selection. The frame is sampled uniformly from
+the first 30% of a trajectory matching `place pcrPlate into the thermal cycler`.
+Front- and left-view MP4s are saved under `videos/` with the fixed
 `problem_validation_open_lid_place_pcr_plate` filename prefix.
 
 <!-- python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
