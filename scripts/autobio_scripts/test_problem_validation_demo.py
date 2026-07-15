@@ -2,7 +2,10 @@ import json
 import math
 import sys
 from argparse import Namespace
+from collections import deque
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pyarrow as pa
@@ -11,13 +14,346 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import evaluator as evaluator_module
+from evaluator import Evaluator, restore_robot_state_direct
 from problem_validation_demo import (
     ProblemValidationDemoConfig,
     PromptRunController,
+    SampledRobotState,
     execute_problem_validation_sequence,
     sample_problem_validation_state,
 )
 from evaluate import apply_problem_validation_demo_profile, evaluate_task, parse_args
+
+
+class _FakeTask:
+    def __init__(self):
+        self.steps = 0
+
+    def step_and_log(self, _info):
+        self.steps += 1
+
+
+class _FakeData:
+    def __init__(self):
+        self.qpos = np.zeros(7, dtype=np.float64)
+        self.ctrl = np.zeros(7, dtype=np.float64)
+
+
+def test_restore_robot_state_interpolates_arm_and_gripper_together():
+    task = _FakeTask()
+    data = _FakeData()
+    target = np.arange(1.0, 8.0)
+
+    steps = restore_robot_state_direct(
+        task=task,
+        data=data,
+        state_indices=range(7),
+        action_indices=range(7),
+        target_state=target,
+        num_steps=4,
+    )
+
+    assert steps == 4
+    assert task.steps == 4
+    np.testing.assert_allclose(data.ctrl, target)
+
+
+def test_restore_robot_state_does_not_modify_non_robot_qpos():
+    task = _FakeTask()
+    data = _FakeData()
+    data.qpos = np.arange(10.0, 19.0)
+    original_qpos = data.qpos.copy()
+
+    restore_robot_state_direct(
+        task=task,
+        data=data,
+        state_indices=range(1, 8),
+        action_indices=range(7),
+        target_state=np.arange(1.0, 8.0),
+        num_steps=2,
+    )
+
+    np.testing.assert_array_equal(data.qpos, original_qpos)
+
+
+def _make_fake_evaluator(check_prompt):
+    events = {
+        "captures": 0,
+        "finishes": 0,
+        "render_finishes": 0,
+        "videos": [],
+        "policy_prompts": [],
+        "policy_ctrl": [],
+        "prompt_starts": [],
+    }
+    data = SimpleNamespace(
+        time=0.0,
+        qpos=np.zeros(7, dtype=np.float64),
+        ctrl=np.zeros(7, dtype=np.float64),
+        warning=SimpleNamespace(number=np.zeros(1, dtype=np.int64)),
+    )
+
+    class FakeTask:
+        time_limit = 30.0
+        task_info = {
+            "state_indices": range(7),
+            "action_indices": range(7),
+            "prefix": None,
+        }
+
+        def step_and_log(self, _info):
+            data.time += 1.0
+
+        def check(self, prompt=None):
+            return check_prompt(prompt, data.time)
+
+        def record_atomic_start(self, prompt):
+            events["prompt_starts"].append(prompt)
+
+        def finish(self):
+            events["finishes"] += 1
+
+    evaluator = Evaluator.__new__(Evaluator)
+    evaluator.task = FakeTask()
+    evaluator.model = SimpleNamespace(
+        opt=SimpleNamespace(timestep=1.0),
+        joint=lambda _name: SimpleNamespace(qposadr=np.asarray(0)),
+    )
+    evaluator.data = data
+    evaluator.task_info = evaluator.task.task_info.copy()
+    evaluator.history_states = deque()
+    evaluator.reset = lambda: None
+    evaluator.get_observation = lambda: {}
+
+    def capture():
+        events["captures"] += 1
+
+    def render_finish():
+        events["render_finishes"] += 1
+
+    def save_video(success, filename_override=None, action_count=None):
+        events["videos"].append((success, filename_override, action_count))
+
+    evaluator._capture_replay_frame = capture
+    evaluator.render_finish = render_finish
+    evaluator.save_video = save_video
+
+    def policy(_observation):
+        events["policy_prompts"].append(evaluator.task_info["prefix"])
+        events["policy_ctrl"].append(data.ctrl.copy())
+        return np.zeros((1, 7), dtype=np.float64)
+
+    return evaluator, policy, events, data
+
+
+def test_ordinary_prompt_still_stops_on_first_success():
+    evaluator, policy, events, data = _make_fake_evaluator(
+        lambda _prompt, current_time: current_time >= 1.0
+    )
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=10.0,
+        prompts=["ordinary prompt"],
+        control_fps=1.0,
+    )
+
+    assert success
+    assert data.time == 2.0  # one existing pre-action settle step plus one policy action
+    assert events["policy_prompts"] == ["ordinary prompt"]
+    assert timing["atomic_task_results"][0]["success"] is True
+
+
+def test_ordinary_multi_prompt_path_still_runs_each_prompt_once(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    evaluator, policy, events, _data = _make_fake_evaluator(
+        lambda _prompt, current_time: current_time >= 1.0
+    )
+    evaluator.get_transition_views = lambda: (None, None)
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=10.0,
+        prompts=["first ordinary prompt", "second ordinary prompt"],
+        control_fps=1.0,
+        use_transition_generation=False,
+        transition_mode="none",
+    )
+
+    assert success
+    assert events["policy_prompts"] == ["first ordinary prompt", "second ordinary prompt"]
+    assert [result["success"] for result in timing["atomic_task_results"]] == [True, True]
+    assert events["finishes"] == events["render_finishes"] == 1
+
+
+def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, capsys, tmp_path):
+    config = replace(
+        ProblemValidationDemoConfig(dataset_root=tmp_path),
+        interpolation_steps=3,
+    )
+    evaluator, policy, events, data = _make_fake_evaluator(
+        lambda prompt, current_time: (
+            current_time >= 1.0 if prompt == config.prompts[0] else prompt == config.prompts[1]
+        )
+    )
+    rng_draws = []
+
+    def fake_sample(sample_config, rng):
+        assert sample_config is config
+        rng_draws.append(int(rng.integers(1_000_000)))
+        return SampledRobotState(
+            state=np.arange(1.0, 8.0),
+            episode_index=7,
+            episode_length=10,
+            prefix_frame_count=3,
+            frame_index=2,
+            frame_ratio=0.2,
+            task=config.prompts[1],
+            dataset_root=tmp_path,
+        )
+
+    monkeypatch.setattr(evaluator_module, "sample_problem_validation_state", fake_sample)
+    monkeypatch.setattr(
+        evaluator_module,
+        "count_robot_object_collision_contacts",
+        lambda _model, _data: 1,
+    )
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=10.0,
+        prompts=list(config.prompts),
+        control_fps=1.0,
+        transition_seed=23,
+        problem_validation_demo_config=config,
+    )
+
+    output = capsys.readouterr().out
+    assert success
+    assert events["policy_prompts"] == [config.prompts[0]] * 6 + [config.prompts[1]]
+    assert rng_draws == [int(np.random.default_rng(23).integers(1_000_000))]
+    assert events["captures"] == 11
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(True, config.video_filename_prefix, 7)]
+    assert [result["prompt"] for result in timing["atomic_task_results"]] == list(config.prompts)
+    assert timing["transition_count"] == 1
+    assert timing["transition_collision_counts"] == {"1": 3}
+    assert output.count("[ProblemValidationDemo] first_success_time=") == 1
+    assert output.count("[ProblemValidationDemo] tail_complete_time=") == 1
+    assert "episode=7" in output
+    assert "length=10" in output
+    assert "prefix_size=3" in output
+    assert "frame=2" in output
+    assert "ratio=0.200000" in output
+    assert "state=[1. 2. 3. 4. 5. 6. 7.]" in output
+    assert "restore_steps=3" in output
+    np.testing.assert_allclose(events["policy_ctrl"][-1], np.arange(1.0, 8.0))
+
+
+def test_demo_first_prompt_failure_does_not_sample(monkeypatch, tmp_path):
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    evaluator, policy, events, _data = _make_fake_evaluator(lambda _prompt, _time: False)
+    monkeypatch.setattr(
+        evaluator_module,
+        "sample_problem_validation_state",
+        lambda *_: pytest.fail("must not sample after first prompt failure"),
+    )
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=2.0,
+        prompts=list(config.prompts),
+        control_fps=1.0,
+        problem_validation_demo_config=config,
+    )
+
+    assert not success
+    assert len(timing["atomic_task_results"]) == 1
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 2)]
+
+
+def test_demo_sampling_error_saves_failure_video_once_then_reraises(monkeypatch, tmp_path):
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    evaluator, policy, events, _data = _make_fake_evaluator(
+        lambda prompt, current_time: prompt == config.prompts[0] and current_time >= 1.0
+    )
+    error = RuntimeError("sample exploded")
+
+    def fail_sample(*_args):
+        raise error
+
+    monkeypatch.setattr(evaluator_module, "sample_problem_validation_state", fail_sample)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        evaluator.evaluate(
+            policy,
+            time_limit=10.0,
+            prompts=list(config.prompts),
+            control_fps=1.0,
+            problem_validation_demo_config=config,
+        )
+
+    assert exc_info.value is error
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 6)]
+
+
+def test_demo_restore_error_saves_failure_video_once_then_reraises(monkeypatch, tmp_path):
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    evaluator, policy, events, _data = _make_fake_evaluator(
+        lambda prompt, current_time: prompt == config.prompts[0] and current_time >= 1.0
+    )
+    sampled = SampledRobotState(
+        state=np.arange(1.0, 8.0),
+        episode_index=7,
+        episode_length=10,
+        prefix_frame_count=3,
+        frame_index=2,
+        frame_ratio=0.2,
+        task=config.prompts[1],
+        dataset_root=tmp_path,
+    )
+    error = RuntimeError("restore exploded")
+    monkeypatch.setattr(evaluator_module, "sample_problem_validation_state", lambda *_: sampled)
+
+    def fail_restore(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(evaluator_module, "restore_robot_state_direct", fail_restore)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        evaluator.evaluate(
+            policy,
+            time_limit=10.0,
+            prompts=list(config.prompts),
+            control_fps=1.0,
+            problem_validation_demo_config=config,
+        )
+
+    assert exc_info.value is error
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 6)]
+
+
+def test_demo_settle_failure_uses_demo_video_name_once(tmp_path):
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    evaluator, policy, events, data = _make_fake_evaluator(lambda _prompt, _time: False)
+    data.warning.number[:] = 1
+
+    success, timing = evaluator.evaluate(
+        policy,
+        time_limit=10.0,
+        prompts=list(config.prompts),
+        control_fps=1.0,
+        problem_validation_demo_config=config,
+    )
+
+    assert not success
+    assert timing["atomic_task_results"] == []
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 0)]
 
 
 def _write_jsonl(path: Path, records: list[dict]):

@@ -11,6 +11,12 @@ import time #
 from datetime import datetime #
 from task import Task
 from serialize import STATE_SPEC
+from problem_validation_demo import (
+    ProblemValidationDemoConfig,
+    PromptRunController,
+    execute_problem_validation_sequence,
+    sample_problem_validation_state,
+)
 
 Policy: TypeAlias = Callable[[dict], np.ndarray]
 
@@ -62,6 +68,41 @@ def capture_prompt_initial_state(data, state_indices, action_indices) -> dict:
     }
 
 
+def restore_robot_state_direct(
+    *,
+    task,
+    data,
+    state_indices,
+    action_indices,
+    target_state,
+    num_steps: int = 250,
+) -> int:
+    state_indices = list(state_indices)
+    action_indices = list(action_indices)
+    if len(action_indices) == 0:
+        return 0
+
+    target = np.asarray(target_state, dtype=np.float64).reshape(-1)
+    if target.size != len(action_indices) or not np.isfinite(target).all():
+        raise ValueError(
+            f"Restore target must contain {len(action_indices)} finite values, got {target.size}"
+        )
+
+    current = np.asarray(data.qpos[state_indices], dtype=np.float64).reshape(-1)
+    if current.size != target.size:
+        current = np.asarray(data.ctrl[action_indices], dtype=np.float64).reshape(-1)
+    if current.size != target.size or not np.isfinite(current).all():
+        raise ValueError(
+            f"Current restore state must contain {target.size} finite values, got {current.size}"
+        )
+
+    steps = max(1, int(num_steps))
+    for alpha in np.linspace(1.0 / steps, 1.0, steps):
+        data.ctrl[action_indices] = current + alpha * (target - current)
+        task.step_and_log({})
+    return steps
+
+
 def restore_prompt_initial_state_direct(
     *,
     task,
@@ -84,19 +125,14 @@ def restore_prompt_initial_state_direct(
             f"Initial restore target dim {target.size} does not match action dim {len(action_indices)}"
         )
 
-    current = np.asarray(data.qpos[state_indices], dtype=np.float64).reshape(-1)
-    if current.size != target.size:
-        current = np.asarray(data.ctrl[action_indices], dtype=np.float64).reshape(-1)
-    if current.size != target.size:
-        raise ValueError(
-            f"Current restore state dim {current.size} does not match target dim {target.size}"
-        )
-
-    steps = max(1, int(num_steps))
-    for alpha in np.linspace(1.0 / steps, 1.0, steps):
-        data.ctrl[action_indices] = current + alpha * (target - current)
-        task.step_and_log({})
-    return steps
+    return restore_robot_state_direct(
+        task=task,
+        data=data,
+        state_indices=state_indices,
+        action_indices=action_indices,
+        target_state=target,
+        num_steps=num_steps,
+    )
 
 
 def make_thermal_mixer_extra(task: Task):
@@ -505,6 +541,7 @@ class Evaluator:
         judge_on_error: str = "fail",
         intervention_mode: str = "non_timeout",
         transition_seed: int | None = None,
+        problem_validation_demo_config: ProblemValidationDemoConfig | None = None,
     ):
         if time_limit is None:
             time_limit = self.task.time_limit
@@ -545,6 +582,12 @@ class Evaluator:
         if effective_intervention_mode not in {"non_timeout", "timeout"}:
             raise ValueError(f"Unsupported intervention_mode: {intervention_mode}")
         transition_rng = np.random.default_rng(transition_seed)
+        if problem_validation_demo_config is not None:
+            config = problem_validation_demo_config
+            assert prompts is not None and tuple(prompts) == config.prompts, (
+                "Problem-validation demo prompts must exactly match the fixed config: "
+                f"expected {config.prompts!r}, got {prompts!r}"
+            )
 
         def build_timing_stats():
             episode_total = time.perf_counter() - episode_start_wall
@@ -626,16 +669,38 @@ class Evaluator:
             if not healthy:
                 self.task.finish()
                 self.render_finish()
-                self.save_video(False, action_count=executed_action_count)
+                self.save_video(
+                    False,
+                    filename_override=(
+                        problem_validation_demo_config.video_filename_prefix
+                        if problem_validation_demo_config is not None
+                        else None
+                    ),
+                    action_count=executed_action_count,
+                )
                 print_timing_summary()
                 return False, build_timing_stats()
         # self._capture_replay_frame()
 
-        def run_prompt(prompt: str | None, current_time_limit: float):
+        def run_prompt(
+            prompt: str | None,
+            current_time_limit: float,
+            post_success_seconds: float = 0.0,
+        ):
             nonlocal executed_action_count
             start_time = self.data.time
+            controller = PromptRunController(
+                start_time=start_time,
+                time_limit=current_time_limit,
+                post_success_seconds=post_success_seconds,
+            )
 
-            while (self.data.time - start_time) < current_time_limit:
+            def prompt_should_continue():
+                if effective_intervention_mode == "timeout":
+                    return (self.data.time - start_time) < current_time_limit
+                return controller.should_continue(self.data.time)
+
+            while prompt_should_continue():
                 observation = self.get_observation()
                 actions = policy(observation)
                 assert actions.ndim == 2 and actions.shape[1] == len(self.task_info['action_indices']), breakpoint()
@@ -650,12 +715,151 @@ class Evaluator:
                         if not healthy:
                             return False, False
                     prompt_success = check_prompt_success(prompt)
-                    if prompt_success is True and effective_intervention_mode == "non_timeout":
+                    previous_success_time = controller.success_time
+                    tail_complete = controller.observe(
+                        self.data.time,
+                        success=prompt_success,
+                    )
+                    if previous_success_time is None and controller.success_time is not None:
+                        if post_success_seconds > 0.0:
+                            print(
+                                "[ProblemValidationDemo] "
+                                f"first_success_time={controller.success_time:.6f}"
+                            )
+                    if tail_complete and effective_intervention_mode == "non_timeout":
+                        if post_success_seconds > 0.0:
+                            print(
+                                "[ProblemValidationDemo] "
+                                f"tail_complete_time={self.data.time:.6f} "
+                                f"elapsed={self.data.time - controller.success_time:.6f}"
+                            )
                         return True, True
             return True, check_prompt_success(prompt)
 
-            
-        
+        if problem_validation_demo_config is not None:
+            demo_success = False
+            sequence_result = None
+            pending_error = None
+            pending_traceback = None
+
+            def run_demo_prompt(prompt: str, post_success_seconds: float):
+                prompt_index = len(atomic_task_results)
+                print(f"[ProblemValidationDemo] prompt_index={prompt_index} prompt={prompt!r}")
+                self.task_info["prefix"] = prompt
+                record_prompt_start(prompt)
+                healthy, local_success = run_prompt(
+                    prompt,
+                    time_limit,
+                    post_success_seconds=post_success_seconds,
+                )
+                prompt_succeeded = bool(local_success)
+                atomic_task_results.append(
+                    {
+                        "prompt_index": int(prompt_index),
+                        "prompt": prompt,
+                        "success": prompt_succeeded,
+                        "attempt_index": 0,
+                    }
+                )
+                print(
+                    f"[ProblemValidationDemo] prompt_index={prompt_index} "
+                    f"healthy={bool(healthy)} success={prompt_succeeded}"
+                )
+                return bool(healthy), prompt_succeeded
+
+            def restore_demo_state(sampled_state, interpolation_steps: int):
+                nonlocal transition_total, transition_count
+                print(
+                    "[ProblemValidationDemo] "
+                    f"episode={sampled_state.episode_index} "
+                    f"length={sampled_state.episode_length} "
+                    f"prefix_size={sampled_state.prefix_frame_count} "
+                    f"frame={sampled_state.frame_index} "
+                    f"ratio={sampled_state.frame_ratio:.6f}"
+                )
+                print(
+                    "[ProblemValidationDemo] state="
+                    + np.array2string(np.asarray(sampled_state.state), precision=8)
+                )
+                transition_start_wall = time.perf_counter()
+                transition_collision_count = 0
+                original_step_and_log = self.task.step_and_log
+
+                def step_and_log_with_capture(info: dict):
+                    nonlocal transition_collision_count
+                    original_step_and_log(info)
+                    transition_collision_count += count_robot_object_collision_contacts(
+                        self.model,
+                        self.data,
+                    )
+                    self._capture_replay_frame()
+
+                self.task.step_and_log = step_and_log_with_capture
+                try:
+                    restored_steps = restore_robot_state_direct(
+                        task=self.task,
+                        data=self.data,
+                        state_indices=self.task_info["state_indices"],
+                        action_indices=self.task_info["action_indices"],
+                        target_state=sampled_state.state,
+                        num_steps=interpolation_steps,
+                    )
+                finally:
+                    self.task.step_and_log = original_step_and_log
+
+                transition_elapsed = time.perf_counter() - transition_start_wall
+                transition_total += transition_elapsed
+                transition_count += 1
+                transition_collision_counts[1] = int(transition_collision_count)
+                print(
+                    "[ProblemValidationDemo] "
+                    f"restore_steps={restored_steps} "
+                    f"robot_object_contacts={transition_collision_count}"
+                )
+
+            try:
+                sequence_result = execute_problem_validation_sequence(
+                    config=config,
+                    rng=transition_rng,
+                    run_prompt=run_demo_prompt,
+                    sample_state=sample_problem_validation_state,
+                    restore_state=restore_demo_state,
+                )
+                demo_success = bool(sequence_result.success)
+            except BaseException as exc:
+                pending_error = exc
+                pending_traceback = exc.__traceback__
+            finally:
+                cleanup_error = None
+                try:
+                    self.task.finish()
+                except BaseException as exc:
+                    cleanup_error = exc
+                try:
+                    self.render_finish()
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+                try:
+                    self.save_video(
+                        demo_success,
+                        filename_override=config.video_filename_prefix,
+                        action_count=executed_action_count,
+                    )
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+                print_timing_summary()
+                if pending_error is None and cleanup_error is not None:
+                    pending_error = cleanup_error
+                    pending_traceback = cleanup_error.__traceback__
+                elif pending_error is not None and cleanup_error is not None:
+                    print(f"[ProblemValidationDemo] cleanup_error={cleanup_error}")
+
+            if pending_error is not None:
+                raise pending_error.with_traceback(pending_traceback)
+            return demo_success, build_timing_stats()
+
         if prompts is None:
             record_prompt_start(None)
             healthy, prompt_success = run_prompt(None, time_limit)
