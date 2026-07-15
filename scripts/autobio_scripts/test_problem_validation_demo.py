@@ -84,6 +84,7 @@ def _make_fake_evaluator(check_prompt):
         "finishes": 0,
         "render_finishes": 0,
         "videos": [],
+        "video_strict": [],
         "policy_prompts": [],
         "policy_ctrl": [],
         "prompt_starts": [],
@@ -133,8 +134,9 @@ def _make_fake_evaluator(check_prompt):
     def render_finish():
         events["render_finishes"] += 1
 
-    def save_video(success, filename_override=None, action_count=None):
+    def save_video(success, filename_override=None, action_count=None, strict=False):
         events["videos"].append((success, filename_override, action_count))
+        events["video_strict"].append(strict)
 
     evaluator._capture_replay_frame = capture
     evaluator.render_finish = render_finish
@@ -146,6 +148,138 @@ def _make_fake_evaluator(check_prompt):
         return np.zeros((1, 7), dtype=np.float64)
 
     return evaluator, policy, events, data
+
+
+def _make_video_evaluator(tmp_path):
+    evaluator = Evaluator.__new__(Evaluator)
+    evaluator.render_video = True
+    evaluator.video_out_path = tmp_path
+    evaluator.video_fps = 1
+    evaluator.replay_images = [
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        np.ones((2, 2, 3), dtype=np.uint8),
+    ]
+    evaluator.replay_left_images = [
+        np.full((2, 2, 3), 2, dtype=np.uint8),
+        np.full((2, 2, 3), 3, dtype=np.uint8),
+    ]
+    evaluator.replay_times = [0.0, 1.0]
+    return evaluator
+
+
+@pytest.mark.parametrize("failed_camera", ["front", "left"])
+def test_strict_video_attempts_all_required_writes_then_raises(
+    monkeypatch,
+    tmp_path,
+    failed_camera,
+):
+    evaluator = _make_video_evaluator(tmp_path)
+    attempted_cameras = []
+
+    def write_video(path, _frames, *, fps):
+        assert fps == 1
+        camera = "left" if "_left_" in Path(path).name else "front"
+        attempted_cameras.append(camera)
+        if camera == failed_camera:
+            raise OSError(f"{camera} write exploded")
+
+    monkeypatch.setattr(evaluator_module.imageio, "mimwrite", write_video)
+
+    with pytest.raises(RuntimeError, match=rf"required.*{failed_camera}"):
+        evaluator.save_video(
+            True,
+            filename_override="problem_validation_demo",
+            strict=True,
+        )
+
+    assert attempted_cameras == ["front", "left"]
+
+
+def test_ordinary_video_write_failures_remain_best_effort(monkeypatch, tmp_path):
+    evaluator = _make_video_evaluator(tmp_path)
+    attempted_cameras = []
+
+    def fail_video_write(path, _frames, *, fps):
+        assert fps == 1
+        attempted_cameras.append("left" if "_left_" in Path(path).name else "front")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(evaluator_module.imageio, "mimwrite", fail_video_write)
+
+    evaluator.save_video(True, filename_override="ordinary")
+
+    assert attempted_cameras == ["front", "left"]
+
+
+def test_strict_video_requires_front_output_when_no_frames_exist(tmp_path):
+    evaluator = _make_video_evaluator(tmp_path)
+    evaluator.replay_images = []
+    evaluator.replay_left_images = []
+    evaluator.replay_times = []
+
+    with pytest.raises(RuntimeError, match=r"required.*front"):
+        evaluator.save_video(
+            False,
+            filename_override="problem_validation_demo",
+            strict=True,
+        )
+
+
+def test_strict_video_still_attempts_left_when_front_frames_are_missing(
+    monkeypatch,
+    tmp_path,
+):
+    evaluator = _make_video_evaluator(tmp_path)
+    evaluator.replay_images = []
+    evaluator.replay_left_images = [np.ones((2, 2, 3), dtype=np.uint8)]
+    evaluator.replay_times = [0.0]
+    attempted_cameras = []
+
+    def write_left(path, _frames, *, fps):
+        assert fps == 1
+        attempted_cameras.append("left" if "_left_" in Path(path).name else "front")
+
+    monkeypatch.setattr(evaluator_module.imageio, "mimwrite", write_left)
+
+    with pytest.raises(RuntimeError, match=r"required.*front"):
+        evaluator.save_video(
+            False,
+            filename_override="problem_validation_demo",
+            strict=True,
+        )
+
+    assert attempted_cameras == ["left"]
+
+
+def test_strict_video_requires_left_output_when_left_camera_exists(
+    monkeypatch,
+    tmp_path,
+):
+    evaluator = _make_video_evaluator(tmp_path)
+    evaluator.model = object()
+    evaluator.replay_left_images = []
+    attempted_cameras = []
+
+    monkeypatch.setattr(
+        evaluator_module.mujoco,
+        "mj_name2id",
+        lambda _model, _object_type, camera_name: 0 if camera_name == "table_cam_left" else -1,
+    )
+
+    def write_front(path, _frames, *, fps):
+        assert fps == 1
+        attempted_cameras.append("left" if "_left_" in Path(path).name else "front")
+
+    monkeypatch.setattr(evaluator_module.imageio, "mimwrite", write_front)
+
+    with pytest.raises(RuntimeError, match=r"required.*left"):
+        evaluator.save_video(
+            True,
+            filename_override="problem_validation_demo",
+            strict=True,
+        )
+
+    assert attempted_cameras == ["front"]
 
 
 def test_ordinary_prompt_still_stops_on_first_success():
@@ -330,9 +464,93 @@ def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, caps
     assert "prefix_size=3" in output
     assert "frame=2" in output
     assert "ratio=0.200000" in output
+    assert f"task={config.prompts[1]!r}" in output
+    assert f"dataset_root={tmp_path}" in output
     assert "state=[1. 2. 3. 4. 5. 6. 7.]" in output
     assert "restore_steps=3" in output
+    assert events["video_strict"] == [True]
     np.testing.assert_allclose(events["policy_ctrl"][-1], np.arange(1.0, 8.0))
+
+
+def test_demo_restore_warning_stops_interpolation_and_second_prompt(
+    monkeypatch,
+    tmp_path,
+):
+    config = replace(
+        ProblemValidationDemoConfig(dataset_root=tmp_path),
+        interpolation_steps=4,
+    )
+    evaluator, policy, events, data = _make_fake_evaluator(
+        lambda prompt, current_time: (
+            current_time >= 1.0 if prompt == config.prompts[0] else True
+        )
+    )
+    sampled = SampledRobotState(
+        state=np.arange(1.0, 8.0),
+        episode_index=7,
+        episode_length=10,
+        prefix_frame_count=3,
+        frame_index=2,
+        frame_ratio=0.2,
+        task=config.prompts[1],
+        dataset_root=tmp_path,
+    )
+    restore_started = False
+    restore_steps = 0
+    original_step_and_log = evaluator.task.step_and_log
+
+    def sample_state(*_args):
+        nonlocal restore_started
+        restore_started = True
+        return sampled
+
+    def step_and_warn(info):
+        nonlocal restore_steps
+        original_step_and_log(info)
+        if restore_started:
+            restore_steps += 1
+            if restore_steps == 2:
+                data.warning.number[:] = 1
+
+    evaluator.task.step_and_log = step_and_warn
+    monkeypatch.setattr(evaluator_module, "sample_problem_validation_state", sample_state)
+
+    with pytest.raises(RuntimeError, match=r"interpolation.*warning"):
+        evaluator.evaluate(
+            policy,
+            time_limit=10.0,
+            prompts=list(config.prompts),
+            control_fps=1.0,
+            problem_validation_demo_config=config,
+        )
+
+    assert restore_steps == 2
+    assert config.prompts[1] not in events["policy_prompts"]
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert events["videos"] == [(False, config.video_filename_prefix, 6)]
+
+
+def test_invalid_demo_prompts_raise_value_error_before_reset(tmp_path):
+    config = ProblemValidationDemoConfig(dataset_root=tmp_path)
+    evaluator, policy, _events, _data = _make_fake_evaluator(lambda *_: False)
+    reset_calls = 0
+
+    def reset():
+        nonlocal reset_calls
+        reset_calls += 1
+
+    evaluator.reset = reset
+
+    with pytest.raises(ValueError, match="prompts must exactly match"):
+        evaluator.evaluate(
+            policy,
+            time_limit=10.0,
+            prompts=["wrong", "prompts"],
+            control_fps=1.0,
+            problem_validation_demo_config=config,
+        )
+
+    assert reset_calls == 0
 
 
 def test_demo_first_prompt_failure_does_not_sample(monkeypatch, tmp_path):
@@ -499,6 +717,59 @@ def test_demo_policy_error_records_failed_attempt_and_preserves_error(capsys, tm
         "prompt_index=0 attempt_index=0 healthy=False success=False "
         f"prompt={config.prompts[0]!r}"
     ) in output
+
+
+def test_demo_policy_error_stays_primary_while_all_cleanup_and_video_writes_run(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    config = ProblemValidationDemoConfig(dataset_root=tmp_path)
+    evaluator, _policy, events, _data = _make_fake_evaluator(lambda *_: False)
+    policy_error = RuntimeError("policy exploded")
+    evaluator.render_video = True
+    evaluator.video_out_path = tmp_path
+    evaluator.video_fps = 1
+    evaluator.replay_images = [np.zeros((2, 2, 3), dtype=np.uint8)]
+    evaluator.replay_left_images = [np.ones((2, 2, 3), dtype=np.uint8)]
+    evaluator.replay_times = [0.0]
+    evaluator.save_video = Evaluator.save_video.__get__(evaluator, Evaluator)
+    attempted_cameras = []
+
+    def fail_finish():
+        events["finishes"] += 1
+        raise RuntimeError("finish exploded")
+
+    def fail_render_finish():
+        events["render_finishes"] += 1
+        raise RuntimeError("render finish exploded")
+
+    def fail_video_write(path, _frames, *, fps):
+        assert fps == 1
+        attempted_cameras.append("left" if "_left_" in Path(path).name else "front")
+        raise OSError("disk full")
+
+    evaluator.task.finish = fail_finish
+    evaluator.render_finish = fail_render_finish
+    monkeypatch.setattr(evaluator_module.imageio, "mimwrite", fail_video_write)
+
+    def fail_policy(_observation):
+        raise policy_error
+
+    with pytest.raises(RuntimeError) as exc_info:
+        evaluator.evaluate(
+            fail_policy,
+            time_limit=10.0,
+            prompts=list(config.prompts),
+            control_fps=1.0,
+            problem_validation_demo_config=config,
+        )
+
+    output = capsys.readouterr().out
+    assert exc_info.value is policy_error
+    assert events["finishes"] == events["render_finishes"] == 1
+    assert attempted_cameras == ["front", "left"]
+    assert "cleanup_error=Problem-validation demo required video write failed" in output
 
 
 def _write_jsonl(path: Path, records: list[dict]):

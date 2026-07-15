@@ -21,6 +21,10 @@ from problem_validation_demo import (
 Policy: TypeAlias = Callable[[dict], np.ndarray]
 
 
+class _RequiredVideoWriteError(RuntimeError):
+    pass
+
+
 def _geom_name(model, geom_id: int) -> str:
     geom_id = int(geom_id)
     geom_names = getattr(model, "geom_names", None)
@@ -469,14 +473,65 @@ class Evaluator:
         if self.render_video:
             self._capture_replay_frame(force=True)
 
-    def save_video(self, success: bool, filename_override: str | None = None, action_count: int | None = None): #
+    def save_video(
+        self,
+        success: bool,
+        filename_override: str | None = None,
+        action_count: int | None = None,
+        strict: bool = False,
+    ): #
         if not self.render_video:
             if action_count is not None:
                 print(f"[ActionDiag] actions={action_count}")
             print("[VideoDiag] Replay video rendering disabled; skipping video save.")
+            if strict:
+                raise _RequiredVideoWriteError(
+                    "Problem-validation demo required video write failed for front: "
+                    "replay video rendering is disabled"
+                )
             return
 
+        def left_camera_exists():
+            try:
+                return (
+                    mujoco.mj_name2id(
+                        self.model,
+                        mujoco.mjtObj.mjOBJ_CAMERA,
+                        "table_cam_left",
+                    )
+                    >= 0
+                )
+            except Exception:
+                return False
+
         if not self.replay_images:
+            if strict:
+                failed_required_cameras = ["front"]
+                if self.replay_left_images:
+                    sampled_left_frames, _ = self._resample_replay_frames(
+                        self.replay_left_images
+                    )
+                    left_path = self._write_video(
+                        sampled_left_frames,
+                        success,
+                        filename_override,
+                        camera_suffix="left",
+                    )
+                    if left_path is None:
+                        failed_required_cameras.append("left")
+                elif left_camera_exists():
+                    self._write_video(
+                        [],
+                        success,
+                        filename_override,
+                        camera_suffix="left",
+                    )
+                    failed_required_cameras.append("left")
+                raise _RequiredVideoWriteError(
+                    "Problem-validation demo required video write failed for "
+                    + ", ".join(failed_required_cameras)
+                    + ": no front replay frames were captured"
+                )
             return
 
         raw_frame_count = len(self.replay_images)
@@ -512,16 +567,50 @@ class Evaluator:
                 f"[ActionDiag] actions={action_count}"
             )
 
-        self._write_video(sampled_front_frames, success, filename_override)
+        failed_required_cameras = []
+        front_path = self._write_video(sampled_front_frames, success, filename_override)
+        if strict and front_path is None:
+            failed_required_cameras.append("front")
 
         if len(self.replay_left_images) == raw_frame_count:
             sampled_left_frames = [self.replay_left_images[i] for i in sampled_indices]
-            self._write_video(sampled_left_frames, success, filename_override, camera_suffix="left")
+            left_path = self._write_video(
+                sampled_left_frames,
+                success,
+                filename_override,
+                camera_suffix="left",
+            )
+            if strict and left_path is None:
+                failed_required_cameras.append("left")
         elif len(self.replay_left_images) > 0:
             sampled_left_frames, _ = self._resample_replay_frames(self.replay_left_images)
-            self._write_video(sampled_left_frames, success, filename_override, camera_suffix="left")
+            left_path = self._write_video(
+                sampled_left_frames,
+                success,
+                filename_override,
+                camera_suffix="left",
+            )
+            if strict and left_path is None:
+                failed_required_cameras.append("left")
         else:
-            print("[VideoDiag] table_cam_left not found; skipping left camera video.")
+            left_camera_present = strict and left_camera_exists()
+            if left_camera_present:
+                left_path = self._write_video(
+                    [],
+                    success,
+                    filename_override,
+                    camera_suffix="left",
+                )
+                if left_path is None:
+                    failed_required_cameras.append("left")
+            else:
+                print("[VideoDiag] table_cam_left not found; skipping left camera video.")
+
+        if failed_required_cameras:
+            raise _RequiredVideoWriteError(
+                "Problem-validation demo required video write failed for "
+                + ", ".join(failed_required_cameras)
+            )
 
     def evaluate(
         self,
@@ -545,6 +634,14 @@ class Evaluator:
     ):
         if time_limit is None:
             time_limit = self.task.time_limit
+
+        if problem_validation_demo_config is not None:
+            config = problem_validation_demo_config
+            if prompts is None or tuple(prompts) != config.prompts:
+                raise ValueError(
+                    "Problem-validation demo prompts must exactly match the fixed config: "
+                    f"expected {config.prompts!r}, got {prompts!r}"
+                )
 
         self.reset()
         if control_fps <= 0:
@@ -582,13 +679,6 @@ class Evaluator:
         if effective_intervention_mode not in {"non_timeout", "timeout"}:
             raise ValueError(f"Unsupported intervention_mode: {intervention_mode}")
         transition_rng = np.random.default_rng(transition_seed)
-        if problem_validation_demo_config is not None:
-            config = problem_validation_demo_config
-            assert prompts is not None and tuple(prompts) == config.prompts, (
-                "Problem-validation demo prompts must exactly match the fixed config: "
-                f"expected {config.prompts!r}, got {prompts!r}"
-            )
-
         def build_timing_stats():
             episode_total = time.perf_counter() - episode_start_wall
             transition_ratio = (transition_total / episode_total * 100.0) if episode_total > 0 else 0.0
@@ -622,26 +712,28 @@ class Evaluator:
             )
 
         def finalize_problem_validation_demo(success: bool):
-            cleanup_error = None
+            cleanup_errors = []
+            video_error = None
             try:
                 self.task.finish()
             except BaseException as exc:
-                cleanup_error = exc
+                cleanup_errors.append(exc)
             try:
                 self.render_finish()
             except BaseException as exc:
-                if cleanup_error is None:
-                    cleanup_error = exc
+                cleanup_errors.append(exc)
             try:
                 self.save_video(
                     success,
                     filename_override=config.video_filename_prefix,
                     action_count=executed_action_count,
+                    strict=True,
                 )
             except BaseException as exc:
-                if cleanup_error is None:
-                    cleanup_error = exc
-            return cleanup_error
+                cleanup_errors.append(exc)
+                if isinstance(exc, _RequiredVideoWriteError):
+                    video_error = exc
+            return video_error or (cleanup_errors[0] if cleanup_errors else None)
 
         def step():
             """Step the task, return True if simulation is healthy."""
@@ -693,6 +785,8 @@ class Evaluator:
                     cleanup_error = finalize_problem_validation_demo(False)
                     if cleanup_error is not None:
                         print(f"[ProblemValidationDemo] cleanup_error={cleanup_error}")
+                        if isinstance(cleanup_error, _RequiredVideoWriteError):
+                            raise cleanup_error
                 else:
                     self.task.finish()
                     self.render_finish()
@@ -798,6 +892,8 @@ class Evaluator:
                 nonlocal transition_total, transition_count
                 print(
                     "[ProblemValidationDemo] "
+                    f"task={sampled_state.task!r} "
+                    f"dataset_root={sampled_state.dataset_root} "
                     f"episode={sampled_state.episode_index} "
                     f"length={sampled_state.episode_length} "
                     f"prefix_size={sampled_state.prefix_frame_count} "
@@ -815,6 +911,12 @@ class Evaluator:
                 def step_and_log_with_capture(info: dict):
                     nonlocal transition_collision_count
                     original_step_and_log(info)
+                    if self.data.warning.number.any():
+                        warning_number = np.asarray(self.data.warning.number).copy()
+                        raise RuntimeError(
+                            "Problem-validation interpolation stopped after a MuJoCo warning: "
+                            f"warning.number={warning_number.tolist()}"
+                        )
                     transition_collision_count += count_robot_object_collision_contacts(
                         self.model,
                         self.data,
