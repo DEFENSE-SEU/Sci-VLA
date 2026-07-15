@@ -8,6 +8,8 @@ import subprocess
 from tqdm import tqdm
 import numpy as np
 
+from problem_validation_demo import ProblemValidationDemoConfig
+
 if TYPE_CHECKING:
     from evaluator import Evaluator, Policy
 
@@ -74,6 +76,26 @@ def configure_mujoco_env(gl_backend: str, render_device_id: str | None = None):
 
 POLICY_BACKENDS = ("openpi", "labvla")
 EXPERIMENT_MODES = ("no-transition", "baseline", "no-retrieval", "no-agent", "full")
+
+
+def apply_problem_validation_demo_profile(args) -> ProblemValidationDemoConfig | None:
+    if not args.problem_validation_demo:
+        return None
+
+    config = ProblemValidationDemoConfig()
+    args.task = config.task_name
+    args.prompts = ",".join(config.prompts)
+    args.num_episodes = 1
+    args.num_workers = 0
+    args.render_video = True
+    args.intervention_mode = "non_timeout"
+    args.experiment_mode = "no-transition"
+    args.use_transition_generation = False
+    args.transition_mode = "none"
+    args.no_planning = False
+    args.no_interpolation = False
+    args.no_retrieval = False
+    return config
 
 
 def prepare_policy_observation(obs: dict, policy_backend: str) -> dict:
@@ -192,6 +214,7 @@ def evaluate_task(
     judge_on_error: str = "fail",
     intervention_mode: str = "non_timeout",
     transition_seed: int | None = None,
+    problem_validation_demo_config: ProblemValidationDemoConfig | None = None,
 ):
     evaluator.task.reset(seed=seed)
     # evaluator.task.set_serializer(log_root="logs/xxxx", log_name=str(seed))
@@ -212,6 +235,11 @@ def evaluate_task(
         judge_on_error=judge_on_error,
         intervention_mode=intervention_mode,
         transition_seed=transition_seed,
+        **(
+            {"problem_validation_demo_config": problem_validation_demo_config}
+            if problem_validation_demo_config is not None
+            else {}
+        ),
     )
 
 
@@ -522,6 +550,11 @@ def parse_args():
         choices=POLICY_BACKENDS,
         help="Policy websocket payload adapter to use: openpi keeps current keys; labvla maps Sci-VLA keys to LABVLA camera/state keys.",
     )
+    parser.add_argument(
+        "--problem-validation-demo",
+        action="store_true",
+        help="Run the fixed thermal-cycler problem validation demo profile.",
+    )
     parser.add_argument("--task", type=str, default="pickup", help="Task name")
     parser.add_argument("--num_episodes", type=int, default=1, help="Number of episodes to evaluate")
     parser.add_argument("--image_history", type=int, default=0, help="Image history for the policy")
@@ -674,6 +707,23 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    problem_validation_demo_config = apply_problem_validation_demo_profile(args)
+    if problem_validation_demo_config is not None:
+        print(
+            "[ProblemValidationDemo] "
+            f"task={args.task} "
+            f"prompts={args.prompts} "
+            f"num_episodes={args.num_episodes} "
+            f"num_workers={args.num_workers} "
+            f"render_video={args.render_video} "
+            f"intervention_mode={args.intervention_mode} "
+            f"experiment_mode={args.experiment_mode} "
+            f"use_transition_generation={args.use_transition_generation} "
+            f"transition_mode={args.transition_mode} "
+            f"no_planning={args.no_planning} "
+            f"no_interpolation={args.no_interpolation} "
+            f"no_retrieval={args.no_retrieval}"
+        )
     mujoco_gl = resolve_mujoco_gl(args.mujoco_gl)
     setup_output_logging(args.log_path)
 
@@ -752,6 +802,7 @@ if __name__ == "__main__":
                 args.judge_on_error,
                 args.intervention_mode,
                 transition_seed=seed,
+                problem_validation_demo_config=problem_validation_demo_config,
             )
             success, timing = normalize_eval_result(raw_result)
             success_results.append(float(success))

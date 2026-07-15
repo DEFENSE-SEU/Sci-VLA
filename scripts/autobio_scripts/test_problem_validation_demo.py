@@ -1,6 +1,7 @@
 import json
 import math
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
@@ -16,11 +17,81 @@ from problem_validation_demo import (
     execute_problem_validation_sequence,
     sample_problem_validation_state,
 )
+from evaluate import apply_problem_validation_demo_profile, evaluate_task, parse_args
 
 
 def _write_jsonl(path: Path, records: list[dict]):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+
+def test_demo_profile_overrides_conflicting_generic_evaluate_args():
+    args = Namespace(
+        problem_validation_demo=True,
+        task="pickup",
+        prompts="wrong,prompts",
+        num_episodes=9,
+        num_workers=4,
+        render_video=False,
+        intervention_mode="timeout",
+        experiment_mode="full",
+        use_transition_generation=True,
+        transition_mode="llm",
+        no_planning=True,
+        no_interpolation=True,
+        no_retrieval=True,
+    )
+
+    config = apply_problem_validation_demo_profile(args)
+
+    assert config is not None
+    assert args.task == config.task_name
+    assert args.prompts == ",".join(config.prompts)
+    assert args.num_episodes == 1
+    assert args.num_workers == 0
+    assert args.render_video is True
+    assert args.intervention_mode == "non_timeout"
+    assert args.experiment_mode == "no-transition"
+    assert args.use_transition_generation is False
+    assert args.transition_mode == "none"
+    assert not args.no_planning and not args.no_interpolation and not args.no_retrieval
+
+
+def test_parse_args_accepts_problem_validation_demo_flag(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", "--problem-validation-demo"])
+
+    args = parse_args()
+
+    assert args.problem_validation_demo is True
+
+
+def test_evaluate_task_forwards_problem_validation_demo_config():
+    class FakeTask:
+        def reset(self, seed):
+            self.seed = seed
+
+    class FakeEvaluator:
+        def __init__(self):
+            self.task = FakeTask()
+            self.kwargs = None
+
+        def evaluate(self, *args, **kwargs):
+            self.kwargs = kwargs
+            return True
+
+    evaluator = FakeEvaluator()
+    config = ProblemValidationDemoConfig()
+
+    evaluate_task(
+        evaluator,
+        object(),
+        seed=17,
+        time_limit=30.0,
+        problem_validation_demo_config=config,
+    )
+
+    assert evaluator.task.seed == 17
+    assert evaluator.kwargs["problem_validation_demo_config"] is config
 
 
 def _write_episode(
