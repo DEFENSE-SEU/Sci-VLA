@@ -546,6 +546,19 @@ def test_parse_args_accepts_problem_validation_demo_flag(monkeypatch):
     assert args.problem_validation_demo is True
 
 
+def test_readme_documents_problem_validation_demo_contract():
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+
+    for expected_text in (
+        "--problem-validation-demo",
+        "open the lid of the thermal cycler",
+        "place pcrPlate into the thermal cycler",
+        "mani_thermalcycler",
+        "problem_validation_open_lid_place_pcr_plate",
+    ):
+        assert expected_text in readme
+
+
 def test_evaluate_task_forwards_problem_validation_demo_config():
     class FakeTask:
         def reset(self, seed):

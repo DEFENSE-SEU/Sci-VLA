@@ -161,6 +161,23 @@ python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1'
 
 Add `--no-render-video` to skip replay video capture and mp4 writing while still running evaluation and counting success.
 
+### Problem-validation video demo
+
+The policy server must already be running, and the local dataset must exist at
+`~/.cache/huggingface/lerobot/mani_thermalcycler`. Then run the fixed demo with:
+
+```bash
+python ./scripts/autobio_scripts/evaluate.py \
+  --problem-validation-demo \
+  --seed 0 \
+  --time_limit 30
+```
+
+The demo executes the fixed prompts `open the lid of the thermal cycler` and
+`place pcrPlate into the thermal cycler`. The seed controls trajectory and frame
+sampling. Front- and left-view MP4s are saved under `videos/` with the fixed
+`problem_validation_open_lid_place_pcr_plate` filename prefix.
+
 <!-- python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
 
 python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --time_limit 30 --prompts "press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
