@@ -175,7 +175,6 @@ def sample_problem_validation_state(
 
     prefix_frame_count = math.ceil(config.prefix_fraction * episode_length)
     try:
-        frame_indices = np.asarray(table.column("frame_index").to_pylist())
         states = np.asarray(table.column("state").to_pylist(), dtype=float)
     except (TypeError, ValueError) as exc:
         raise ValueError(
@@ -183,19 +182,27 @@ def sample_problem_validation_state(
         ) from exc
     if states.ndim != 2 or states.shape[1] != 7 or not np.isfinite(states).all():
         raise ValueError(f"Episode {episode_index} must contain finite 7-dimensional state data")
-    if frame_indices.ndim != 1 or len(frame_indices) != len(states):
-        raise ValueError(f"Episode {episode_index} has invalid frame_index data in {episode_path}")
 
-    prefix_rows = np.flatnonzero(frame_indices < prefix_frame_count)
-    if prefix_rows.size == 0:
-        raise ValueError(
-            f"Episode {episode_index} has no frames in its first {prefix_frame_count} frames"
+    frame_indices = table.column("frame_index").to_pylist()
+    expected_frame_indices = set(range(episode_length))
+    if (
+        len(frame_indices) != len(states)
+        or len(frame_indices) != episode_length
+        or any(
+            not isinstance(frame_index, int) or isinstance(frame_index, bool)
+            for frame_index in frame_indices
         )
-    row_index = int(prefix_rows[int(rng.integers(prefix_rows.size))])
-    try:
-        frame_index = int(frame_indices[row_index])
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Episode {episode_index} has invalid frame_index data in {episode_path}") from exc
+        or len(set(frame_indices)) != len(frame_indices)
+        or set(frame_indices) != expected_frame_indices
+    ):
+        raise ValueError(
+            f"Episode {episode_index} has invalid frame_index data in {episode_path}; "
+            f"expected unique integers covering 0..{episode_length - 1}"
+        )
+
+    frame_to_row = {frame_index: row_index for row_index, frame_index in enumerate(frame_indices)}
+    frame_index = int(rng.integers(prefix_frame_count))
+    row_index = frame_to_row[frame_index]
 
     return SampledRobotState(
         state=states[row_index],

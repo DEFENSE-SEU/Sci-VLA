@@ -23,15 +23,22 @@ def _write_jsonl(path: Path, records: list[dict]):
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
-def _write_episode(root: Path, episode_index: int, states: list[list[float]]):
+def _write_episode(
+    root: Path,
+    episode_index: int,
+    states: list[list[float]],
+    *,
+    frame_indices=None,
+):
     path = root / "data" / "chunk-000" / f"episode_{episode_index:06d}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
-    state_type = pa.list_(pa.float32(), 7)
+    state_type = pa.list_(pa.float32(), len(states[0]))
+    frame_indices = range(len(states)) if frame_indices is None else frame_indices
     pq.write_table(
         pa.table(
             {
                 "state": pa.array(states, type=state_type),
-                "frame_index": pa.array(range(len(states)), type=pa.int64()),
+                "frame_index": pa.array(frame_indices),
             }
         ),
         path,
@@ -75,11 +82,78 @@ def test_samples_reproducible_state_from_first_thirty_percent(tmp_path):
     np.testing.assert_allclose(first.state, [float(first.frame_index)] * 7)
 
 
-def test_sampler_rejects_nonfinite_or_wrong_sized_state(tmp_path):
+def test_sampler_rejects_nonfinite_state(tmp_path):
     root = _demo_dataset(tmp_path)
     _write_episode(root, 7, [[0.0] * 6 + [float("nan")]] * 10)
 
     with pytest.raises(ValueError, match="finite 7-dimensional"):
+        sample_problem_validation_state(
+            ProblemValidationDemoConfig(dataset_root=root),
+            np.random.default_rng(0),
+        )
+
+
+def test_sampler_rejects_six_dimensional_state(tmp_path):
+    root = _demo_dataset(tmp_path)
+    _write_episode(root, 7, [[0.0] * 6 for _ in range(10)])
+
+    with pytest.raises(ValueError, match="finite 7-dimensional"):
+        sample_problem_validation_state(
+            ProblemValidationDemoConfig(dataset_root=root),
+            np.random.default_rng(0),
+        )
+
+
+def test_sampler_rejects_duplicate_prefix_frame_index(tmp_path):
+    root = _demo_dataset(tmp_path)
+    _write_episode(
+        root,
+        7,
+        [[float(frame)] * 7 for frame in range(10)],
+        frame_indices=[0, 0, *range(2, 10)],
+    )
+
+    with pytest.raises(ValueError, match=r"Episode 7.*frame_index"):
+        sample_problem_validation_state(
+            ProblemValidationDemoConfig(dataset_root=root),
+            np.random.default_rng(0),
+        )
+
+
+def test_sampler_rejects_missing_prefix_frame_index(tmp_path):
+    root = _demo_dataset(tmp_path)
+    _write_episode(
+        root,
+        7,
+        [[float(frame)] * 7 for frame in range(10)],
+        frame_indices=[0, 2, *range(3, 11)],
+    )
+
+    with pytest.raises(ValueError, match=r"Episode 7.*frame_index"):
+        sample_problem_validation_state(
+            ProblemValidationDemoConfig(dataset_root=root),
+            np.random.default_rng(0),
+        )
+
+
+@pytest.mark.parametrize(
+    "frame_indices",
+    [
+        ["invalid", *map(str, range(1, 10))],
+        [0.5, *range(1, 10)],
+        [-1, *range(1, 10)],
+    ],
+)
+def test_sampler_rejects_invalid_frame_index(tmp_path, frame_indices):
+    root = _demo_dataset(tmp_path)
+    _write_episode(
+        root,
+        7,
+        [[float(frame)] * 7 for frame in range(10)],
+        frame_indices=frame_indices,
+    )
+
+    with pytest.raises(ValueError, match=r"Episode 7.*frame_index"):
         sample_problem_validation_state(
             ProblemValidationDemoConfig(dataset_root=root),
             np.random.default_rng(0),
