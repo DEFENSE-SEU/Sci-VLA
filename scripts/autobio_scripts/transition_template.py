@@ -175,6 +175,7 @@ class TransitionExpert:
     ):
         from non_llm_transition import (
             execute_interpolated_joint_path,
+            joint_ranges_from_model,
             plan_joint_path_rrt,
             validate_joint_path_in_mujoco,
         )
@@ -191,10 +192,11 @@ class TransitionExpert:
                 path,
                 num_steps_per_segment=int(validation_steps_per_segment),
             ),
-            joint_ranges=None,
+            joint_ranges=joint_ranges_from_model(self.model, self.jnt_span),
         )
-        if "FALLBACK" in path_plan.status:
-            print("[Transition] RRT FAILED; FALLBACK to direct interpolation for transition action.")
+        if path_plan.status == "RRT_FAILED_SKIP_ACTION" or not path_plan.waypoints:
+            print("[Transition] RRT FAILED; skipping transition action.")
+            return 0
         execute_interpolated_joint_path(
             task=self.task,
             data=self.data,
@@ -209,16 +211,16 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 180}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 180}, {"op": "translate", "axis": "y", "distance_m": 0.0988, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.0872, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.0165, "steps": 80}])
+        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.12, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.08, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": 0.1, "steps": 120}, {"op": "rotate", "axis": "z", "angle_deg": 25, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.1, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.06, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": -0.25, "steps": 200}, {"op": "translate", "axis": "y", "distance_m": -0.25, "steps": 200}, {"op": "translate", "axis": "z", "distance_m": 0.13, "steps": 130}, {"op": "translate", "axis": "x", "distance_m": -0.02, "steps": 110}])
 
         # Restore to target pose (hard-inserted from planning JSON).
-        from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path
-        target_qpos_candidates = [[-1.1028250455856323, -1.5688995122909546, 1.574247121810913, -1.7400238513946533, -1.5294241905212402, -1.6271847486495972, 0.0], [-1.0971156358718872, -1.5591788291931152, 1.564862608909607, -1.7234259843826294, -1.6291669607162476, -1.623416543006897, 0.0], [-1.1163166761398315, -1.6767514944076538, 1.4592636823654175, -1.7951040267944336, -1.4727779626846313, -1.6246824264526367, 0.0]]
+        from transition_generation import select_target_qpos_after_transition, validate_qpos_rrt_path
+        target_qpos_candidates = [[-2.4849634170532227, -1.1125943660736084, 0.9773984551429749, -0.36496174335479736, -0.9897647500038147, -2.9190187454223633, 0.0025936260353773832]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],
             top_k=3,
-            path_validator=lambda candidate_qpos, *, selected_index: validate_qpos_interpolation_path(
+            path_validator=lambda candidate_qpos, *, selected_index: validate_qpos_rrt_path(
                 self.model,
                 self.data,
                 self.jnt_span,

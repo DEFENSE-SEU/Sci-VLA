@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import json
 import re
+import sys
 
 import numpy as np
 
@@ -43,7 +44,7 @@ def test_collision_aware_planner_falls_back_to_deterministic_waypoint():
     np.testing.assert_allclose(plan.waypoints[-1], target)
 
 
-def test_rrt_planner_falls_back_to_interpolation_when_no_path_is_valid():
+def test_rrt_planner_skips_action_when_no_path_is_valid():
     from non_llm_transition import plan_joint_path_rrt
 
     start = np.zeros(6)
@@ -60,10 +61,34 @@ def test_rrt_planner_falls_back_to_interpolation_when_no_path_is_valid():
         max_iterations=4,
     )
 
-    assert "FALLBACK" in plan.status
-    assert len(plan.waypoints) == 2
-    np.testing.assert_allclose(plan.waypoints[0], start)
-    np.testing.assert_allclose(plan.waypoints[-1], target)
+    assert plan.status == "RRT_FAILED_SKIP_ACTION"
+    assert plan.waypoints == []
+    assert plan.validation["reason"] == "rrt_failed_skip_action"
+
+
+def test_joint_ranges_from_model_maps_qpos_span_to_scalar_joint_limits():
+    from non_llm_transition import joint_ranges_from_model
+
+    model = SimpleNamespace(
+        nq=3,
+        njnt=3,
+        jnt_qposadr=np.array([0, 1, 2], dtype=np.int32),
+        jnt_range=np.array(
+            [
+                [-1.0, 1.0],
+                [-2.0, 2.0],
+                [-3.0, 3.0],
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    ranges = joint_ranges_from_model(model, range(0, 3))
+
+    np.testing.assert_allclose(
+        ranges,
+        np.array([[-1.0, 1.0], [-2.0, 2.0], [-3.0, 3.0]], dtype=np.float64),
+    )
 
 
 def test_baseline_experiment_mode_uses_random_dataset_task_pose_rrt():
@@ -129,11 +154,34 @@ def test_execute_interpolated_joint_path_drives_target_controls():
     np.testing.assert_allclose(data.ctrl[:6], np.ones(6))
 
 
+def test_transition_command_normalization_clamps_motion_steps_to_slow_minimum(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(OpenAI=object),
+    )
+    from transition_generation import MIN_TRANSITION_MOTION_STEPS, _normalize_transition_commands
+
+    commands = _normalize_transition_commands(
+        [
+            {"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 12},
+            {"op": "rotate", "axis": "x", "angle_deg": 15, "steps": 80},
+        ]
+    )
+
+    assert commands[0]["steps"] == MIN_TRANSITION_MOTION_STEPS
+    assert commands[1]["steps"] == MIN_TRANSITION_MOTION_STEPS
+
+
 def test_transition_template_commands_use_rrt_motion_without_changing_move_to():
     source = Path("scripts/autobio_scripts/transition_template.py").read_text(encoding="utf-8")
 
     assert "def move_to_rrt(" in source
     assert "def move_to_target_qpos_rrt(" in source
+    assert "joint_ranges_from_model" in source
+    assert "joint_ranges=joint_ranges_from_model(self.model, self.jnt_span)" in source
+    assert "RRT_FAILED_SKIP_ACTION" in source
+    assert "return 0" in source
 
     translate_body = re.search(
         r"def translate_ee\(.*?\):\n(?P<body>.*?)(?=\n    def )",

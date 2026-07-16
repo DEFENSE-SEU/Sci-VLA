@@ -16,6 +16,11 @@ LID_OPEN_BUTTON_PRE_CLEARANCE = 0.12
 # fully depressed slide limit without driving far through the button.
 LID_OPEN_BUTTON_PRESS_CLEARANCE = -0.008
 
+EXPERIMENTAL_TUBE_SLOT_ID = 0
+BALANCE_TUBE_SLOT_ID = 1
+EXPERIMENTAL_TUBE_RACK_POSITION = (1, 4)
+BALANCE_TUBE_RACK_POSITION = (0, 2)
+
 CENTRIFUGE5910_PROMPT_TASKS = {
     "open the lid of the centrifuge5910": "open_centrifuge5910_lid",
     "open the lid of the centrifuge 5910": "open_centrifuge5910_lid",
@@ -451,6 +456,21 @@ class Centrifuge5910Manipulate(Task):
         self.data.qpos[self.arm.jnt_span] += perturbation
         self.data.ctrl[self.arm.act_span] += perturbation
 
+    def _randomize_tube_between_slot_and_rack(
+        self,
+        tube: CentrifugeTube,
+        slot_id: int,
+        rack_position: tuple[int, int],
+    ) -> None:
+        if np.random.randint(0, 2) == 0:
+            tube_pose = self.instrument.get_tube_pose(self.data, slot_id, "distal")
+            tube.set_pose(self.data, tube_pose)
+            return
+
+        row, col = rack_position
+        rack_pos = self.rack1.get_position(self.data, row, col, "50ml")
+        self.data.qpos[tube.pos_span] = rack_pos
+
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         self.manager.reset(keyframe=0)
@@ -556,17 +576,19 @@ class Centrifuge5910Manipulate(Task):
                 self._forward_and_update_instrument()
                 prefix='close the lid of the centrifuge5910'
             case 'take_experimental_tube_from_centrifuge5910':
-                # 将离心管放在离心机槽位中
-                slot_id=1
-                tube_pose = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
+                tube_pose = self.instrument.get_tube_pose(
+                    self.data, EXPERIMENTAL_TUBE_SLOT_ID, "distal"
+                )
                 self.tube.set_pose(self.data, tube_pose)
-                # 将配平离心管放在离心机槽位中
-                slot_id=0
-                tube_pose2 = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
-                self.tube2.set_pose(self.data, tube_pose2)
-                end_row=1
-                end_col=4
-                self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
+                self._randomize_tube_between_slot_and_rack(
+                    self.tube2,
+                    BALANCE_TUBE_SLOT_ID,
+                    BALANCE_TUBE_RACK_POSITION,
+                )
+                end_row, end_col = EXPERIMENTAL_TUBE_RACK_POSITION
+                self.tube_end_pos = self.rack1.get_position(
+                    self.data, end_row, end_col, "50ml"
+                )
 
                 
                 self._apply_arm_qpos_perturbation()
@@ -580,17 +602,19 @@ class Centrifuge5910Manipulate(Task):
                 ])
                 prefix='pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack'
             case 'take_balance_tube_from_centrifuge5910':
-                # 将离心管放在离心机槽位中
-                slot_id=1
-                tube_pose = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
+                tube_pose = self.instrument.get_tube_pose(
+                    self.data, BALANCE_TUBE_SLOT_ID, "distal"
+                )
                 self.tube2.set_pose(self.data, tube_pose)
-                end_row=1
-                end_col=4
-                self.tube_start_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
-                self.data.qpos[self.tube.pos_span] = self.tube_start_pos
-                end_row=0
-                end_col=2
-                self.tube_end_pos = self.rack1.get_position(self.data, end_row, end_col, '50ml')
+                self._randomize_tube_between_slot_and_rack(
+                    self.tube,
+                    EXPERIMENTAL_TUBE_SLOT_ID,
+                    EXPERIMENTAL_TUBE_RACK_POSITION,
+                )
+                end_row, end_col = BALANCE_TUBE_RACK_POSITION
+                self.tube_end_pos = self.rack1.get_position(
+                    self.data, end_row, end_col, "50ml"
+                )
 
                 self._apply_arm_qpos_perturbation()
                 # 确保物理正确
@@ -876,8 +900,8 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         self.gripper_control(250)
         self.move_to(pre_pose, num_steps=12)
         self.move_to(press_pose, num_steps=8)
-        for _ in range(60):
-            self.step_and_log({})
+        # for _ in range(60):
+        #     self.step_and_log({})
         self.gripper_control(0)
         pre_pose_above = Pose(
             pos=pre_pose.pos + np.array([0.0, 0.15, 0.05]),
@@ -886,22 +910,17 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
         self.move_to(pre_pose_above, num_steps=8)
         clear_pose = Pose(pos=np.array([-0.2, 0.25, 1.35]), quat=pre_pose.quat)
         self.move_to(clear_pose, num_steps=16)
-        for _ in range(1600):
-            self.step_and_log({})
-            lid_qpos = self.data.qpos[self.instrument.lid_qposadr]
-            if lid_qpos <= self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
-                break
+        # for _ in range(1600):
+        #     self.step_and_log({})
+        #     lid_qpos = self.data.qpos[self.instrument.lid_qposadr]
+        #     if lid_qpos <= self.instrument.lid_pop_qpos + self.instrument.lid_pop_tol:
+        #         break
 
     def execute(self):
         self.arm.ik.initial_qpos = self.data.qpos[self.arm.jnt_span]
         match self.task:
             case 'open_centrifuge5910_lid':
                 self.press_lid_open_button()
-                # self.gripper_control(0)
-                # cur_pose = self.arm.get_site_pose(self.data)
-                # end_pose = Pose(pos=np.array([-0.2, 0.25, 1.35]), quat=cur_pose.quat)
-                # path = self.interpolate(cur_pose, end_pose, 20)
-                # self.path_follow(path)
 
                 target_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='1/detach')
                 self.move_to(target_pose, num_steps=12)
@@ -962,35 +981,29 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 lock_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='lock')
                 lock_pose.quat = lock_quat
                 self.move_to(lock_pose, num_steps=5)
-                for _ in range(100):
-                    self.step_and_log({})
 
-                final_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='lock_pre')
-                final_pose.quat = lock_quat
-                self.move_to(final_pose, num_steps=5)
             case 'take_experimental_tube_from_centrifuge5910':
-                slot_id=1
+                slot_id = EXPERIMENTAL_TUBE_SLOT_ID
                 eef_pose = self.tube.get_end_effector_pose(self.data)
                 pre_end_pos = self.tube_end_pos.copy()
                 tube_pose = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
-                # 步骤1：打开夹爪
+
                 current_pose = self.arm.get_site_pose(self.data)
-                self.gripper_control(0)  # UR5e的夹爪控制值范围可能不同，需要调整
+                self.gripper_control(0)
                 lift_pose = Pose(
                     pos=tube_pose.pos + np.array([0, 0.2, 0.2]),
                     quat=eef_pose.quat
                 )
-                #quat=current_pose.quat  # 保持相同的姿态
+
                 current_pose = self.arm.get_site_pose(self.data)
                 self.move_to(lift_pose, 14)
-                # 步骤2：移动到预抓取位置（离心管上方)
+
                 eef_pre_pose = Pose(
                     pos=tube_pose.pos + np.array([0.0, 0.0, 0.15]),  # 上方6cm（与 Pickup 任务相同）
                     quat=eef_pose.quat
                 )
-                #end_quta=current_pose.quat
+
                 cur_pose = self.arm.get_site_pose(self.data)
-                # 移动到预抓取位置（模仿 Pickup 任务的两段路径）
                 path_to_pre = self.interpolate(cur_pose, eef_pre_pose, 25)
                 self.path_follow(path_to_pre)
                 current_pose = self.arm.get_site_pose(self.data)
@@ -998,13 +1011,11 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                     pos=tube_pose.pos + np.array([0.0, 0.0, 0.13]),
                     quat=current_pose.quat
                 )
-                # 步骤3：移动到抓取位置
                 path_to_grip = self.interpolate(eef_pre_pose, target_pose, 5)
                 self.path_follow(path_to_grip)
-                # 步骤4：闭合夹爪
-                self.gripper_control(350)
+
+                self.gripper_control(255)
                 
-                # 步骤5：垂直向上提起离心管
                 cur_pose = self.arm.get_site_pose(self.data)
                 lift_pose = Pose(
                     pos=tube_pose.pos + np.array([0.0, 0.0, 0.2]),  # 向上15cm
@@ -1020,59 +1031,50 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 )
                 path_lift = self.interpolate(cur_pose, lift_pose, 15)
                 self.path_follow(path_lift)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 pre_pose = Pose(pos=pre_end_pos + (0.0, 0.0, 0.2), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, pre_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 pre_end_pos = Pose(pos=pre_end_pos + (0.0, 0.0, 0.12), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, pre_end_pos, 20)
                 self.path_follow(path)
                 self.gripper_control(0)
-                cur_pose = self.arm.get_site_pose(self.data)
-                end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
-                path = self.interpolate(cur_pose, end_pose, 20)
-                self.path_follow(path)
-                # 等待一会儿
-                for _ in range(100):
-                    self.step_and_log({})
             case 'take_balance_tube_from_centrifuge5910':
-                slot_id=1
-                eef_pose = self.tube.get_end_effector_pose(self.data)
+                slot_id = BALANCE_TUBE_SLOT_ID
+                eef_pose = self.tube2.get_end_effector_pose(self.data)
                 pre_end_pos = self.tube_end_pos.copy()
                 tube_pose = self.instrument.get_tube_pose(self.data, slot_id, 'distal')
-                # 步骤1：打开夹爪
+
                 current_pose = self.arm.get_site_pose(self.data)
-                self.gripper_control(0)  # UR5e的夹爪控制值范围可能不同，需要调整
+                self.gripper_control(0)
                 lift_pose = Pose(
                     pos=tube_pose.pos + np.array([0, 0.2, 0.2]),
                     quat=eef_pose.quat
                 )
-                #quat=current_pose.quat  # 保持相同的姿态
+
                 current_pose = self.arm.get_site_pose(self.data)
                 self.move_to(lift_pose, 14)
-                # 步骤2：移动到预抓取位置（离心管上方)
                 eef_pre_pose = Pose(
                     pos=tube_pose.pos + np.array([0.0, 0.0, 0.15]),  # 上方6cm（与 Pickup 任务相同）
                     quat=eef_pose.quat
                 )
-                #end_quta=current_pose.quat
                 cur_pose = self.arm.get_site_pose(self.data)
-                # 移动到预抓取位置（模仿 Pickup 任务的两段路径）
                 path_to_pre = self.interpolate(cur_pose, eef_pre_pose, 25)
                 self.path_follow(path_to_pre)
+
                 current_pose = self.arm.get_site_pose(self.data)
                 target_pose = Pose(
                     pos=tube_pose.pos + np.array([0.0, 0.0, 0.13]),
                     quat=current_pose.quat
                 )
-                # 步骤3：移动到抓取位置
                 path_to_grip = self.interpolate(eef_pre_pose, target_pose, 5)
                 self.path_follow(path_to_grip)
-                # 步骤4：闭合夹爪
-                self.gripper_control(350)
+
+                self.gripper_control(255)
                 
-                # 步骤5：垂直向上提起离心管
                 cur_pose = self.arm.get_site_pose(self.data)
                 lift_pose = Pose(
                     pos=tube_pose.pos + np.array([0.0, 0.0, 0.17]),  # 向上15cm
@@ -1096,22 +1098,17 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 )
                 path_lift = self.interpolate(cur_pose, lift_pose, 15)
                 self.path_follow(path_lift)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 pre_pose = Pose(pos=pre_end_pos + (0.0, 0.0, 0.2), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, pre_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 pre_end_pos = Pose(pos=pre_end_pos + (0.0, 0.0, 0.12), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, pre_end_pos, 20)
                 self.path_follow(path)
                 self.gripper_control(0)
-                cur_pose = self.arm.get_site_pose(self.data)
-                end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
-                path = self.interpolate(cur_pose, end_pose, 20)
-                self.path_follow(path)
-                # 等待一会儿
-                for _ in range(100):
-                    self.step_and_log({})
             case 'place_experimental_tube_into_centrifuge5910':
                 eef_pose = self.tube.get_end_effector_pose(self.data)
                 lift_pose = Pose(
@@ -1124,37 +1121,40 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                     quat=eef_pose.quat
                 )
                 self.move_to(lift_pose, 14)
-                self.gripper_control(250)
+
+                self.gripper_control(255)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 pre_end_pos = self.tube_end_pos
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.3, 0.3, 0.3), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.1, 0.3, 0.3), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.1, 0.1, 0.3), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.0, 0, 0.2), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.0, 0, 0.13), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
                 self.gripper_control(0)
-                cur_pose = self.arm.get_site_pose(self.data)
-                end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
-                path = self.interpolate(cur_pose, end_pose, 20)
-                self.path_follow(path)
             case 'place_balance_tube_into_centrifuge5910':
                 eef_pose = self.tube.get_end_effector_pose(self.data)
                 lift_pose = Pose(
@@ -1167,45 +1167,38 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                     quat=eef_pose.quat
                 )
                 self.move_to(lift_pose, 14)
-                self.gripper_control(250)
+
+                self.gripper_control(255)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 pre_end_pos = self.tube2_end_pos
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.0, 0.4, 0.3), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.0, 0, 0.17), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=pre_end_pos.pos + (0.0, 0, 0.13), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
                 self.gripper_control(0)
-                cur_pose = self.arm.get_site_pose(self.data)
-                end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.06), quat=cur_pose.quat)
-                path = self.interpolate(cur_pose, end_pose, 20)
-                self.path_follow(path)
             case 'press_centrifuge5910_button':
-                self.gripper_control(250)  
+                self.gripper_control(255)  
+                
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
-                cur_pose = self.arm.get_site_pose(self.data)
-                # rotation_angle = 60  # 度
-                # rotation_axis = 'x'  # 绕垂直轴旋转
-                # # 创建旋转四元数
-                # rotate_90 = R.from_euler(rotation_axis, rotation_angle, degrees=True)
-                # target_quat = (rotate_90 * R.from_quat(cur_pose.quat)).as_quat()
-                # end_pose = Pose(pos=np.array([0.45, 0.05, 1.22]), quat=target_quat)
-                # path = self.interpolate(cur_pose, end_pose, 20)
-                # self.path_follow(path)
-                # cur_pose = self.arm.get_site_pose(self.data)
+
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, -0.2, 0.02), quat=cur_pose.quat)
                 path = self.interpolate(cur_pose, end_pose, 20)

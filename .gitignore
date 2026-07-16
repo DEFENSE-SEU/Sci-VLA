@@ -25,3 +25,5 @@ script_*.sh
 tests/
 docs/
 *.log
+research/
+*.tex

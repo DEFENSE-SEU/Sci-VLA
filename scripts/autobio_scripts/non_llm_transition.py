@@ -45,6 +45,44 @@ def _clamp_to_joint_ranges(qpos: np.ndarray, joint_ranges: np.ndarray | None) ->
     return np.clip(qpos, ranges[: qpos.size, 0], ranges[: qpos.size, 1])
 
 
+def joint_ranges_from_model(model, jnt_span) -> np.ndarray | None:
+    qpos_indices = list(jnt_span)
+    if not qpos_indices:
+        return None
+
+    qpos_addresses = np.asarray(getattr(model, "jnt_qposadr", []), dtype=np.int64).reshape(-1)
+    joint_ranges = np.asarray(getattr(model, "jnt_range", []), dtype=np.float64)
+    nq = int(getattr(model, "nq", 0) or 0)
+    if qpos_addresses.size == 0 or joint_ranges.ndim != 2 or joint_ranges.shape[1] != 2:
+        return None
+
+    ranges_by_qpos: dict[int, np.ndarray] = {}
+    sorted_joint_ids = sorted(range(qpos_addresses.size), key=lambda idx: int(qpos_addresses[idx]))
+    for order_index, joint_id in enumerate(sorted_joint_ids):
+        start = int(qpos_addresses[joint_id])
+        if start < 0:
+            continue
+        if order_index + 1 < len(sorted_joint_ids):
+            end = int(qpos_addresses[sorted_joint_ids[order_index + 1]])
+        else:
+            end = nq
+        width = end - start
+        if width != 1:
+            continue
+        low, high = joint_ranges[joint_id]
+        if not np.isfinite([low, high]).all() or high <= low:
+            continue
+        ranges_by_qpos[start] = np.array([low, high], dtype=np.float64)
+
+    ranges = []
+    for qpos_index in qpos_indices:
+        qpos_index = int(qpos_index)
+        if qpos_index not in ranges_by_qpos:
+            return None
+        ranges.append(ranges_by_qpos[qpos_index])
+    return np.asarray(ranges, dtype=np.float64)
+
+
 def _candidate_waypoints(
     start: np.ndarray,
     target: np.ndarray,
@@ -388,17 +426,17 @@ def plan_joint_path_rrt(
                     validation=payload,
                 )
 
-    fallback_payload = {
+    failure_payload = {
         "valid": False,
-        "reason": "rrt_failed_fallback_to_interpolation",
+        "reason": "rrt_failed_skip_action",
         "last_validation": last_payload,
         "iterations": iterations,
         "nodes": len(nodes),
     }
     return JointPathPlan(
-        waypoints=direct_path,
-        status="FALLBACK_RRT_TO_INTERPOLATION",
-        validation=fallback_payload,
+        waypoints=[],
+        status="RRT_FAILED_SKIP_ACTION",
+        validation=failure_payload,
     )
 
 
@@ -424,6 +462,8 @@ def execute_interpolated_joint_path(
     waypoints: list[np.ndarray],
     steps_per_segment: int = 250,
 ) -> int:
+    if not waypoints:
+        return 0
     controls = interpolate_joint_path(waypoints, steps_per_segment=steps_per_segment)
     action_indices = list(act_span)
     for ctrl in controls:
@@ -755,7 +795,7 @@ def execute_non_llm_transition(
     jnt_span = range(ur_joint_start, ur_joint_start + 6)
     act_span = range(ur_act_start, ur_act_start + 6)
     current_joint_pos = _as_joint_vector(data.qpos[jnt_span])
-    joint_ranges = None
+    joint_ranges = joint_ranges_from_model(model, jnt_span)
     planning_start = time.perf_counter()
 
     if mode == "random_dataset_task_pose_rrt":
@@ -795,9 +835,9 @@ def execute_non_llm_transition(
             joint_ranges=joint_ranges,
             rng=rng,
         )
-        if "FALLBACK" in path_plan.status:
+        if path_plan.status == "RRT_FAILED_SKIP_ACTION" or not path_plan.waypoints:
             print(
-                "[NonLLMTransition] RRT FAILED; FALLBACK to direct interpolation "
+                "[NonLLMTransition] RRT FAILED; skipping arm transition action "
                 f"for target_prompt={target_prompt!r}."
             )
     elif mode in {"retrieval_collision_planner", "random_future_task_pose_collision_planner"}:
@@ -821,13 +861,16 @@ def execute_non_llm_transition(
         )
     planning_elapsed = time.perf_counter() - planning_start
 
-    executed_steps = execute_interpolated_joint_path(
-        task=task,
-        data=data,
-        act_span=act_span,
-        waypoints=path_plan.waypoints,
-        steps_per_segment=restore_steps_per_segment,
-    )
+    if path_plan.status == "RRT_FAILED_SKIP_ACTION" or not path_plan.waypoints:
+        executed_steps = 0
+    else:
+        executed_steps = execute_interpolated_joint_path(
+            task=task,
+            data=data,
+            act_span=act_span,
+            waypoints=path_plan.waypoints,
+            steps_per_segment=restore_steps_per_segment,
+        )
 
     if target_gripper is not None:
         data.ctrl[gripper_act_id] = target_gripper

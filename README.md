@@ -133,6 +133,7 @@ data root, repo id, schema, and stats settings from the launcher.
 ```bash
 python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
 ```
+<!-- python scripts/autobio_scripts/export_lerobot_ready_memory_index.py     --repo_id mani_thermalcycler     --output logs/ready_memory_index.json     --samples-per-task 1     --selection longest     --frame-stride 2 -->
 
 ### Convert jax model to pytorch model
 If you want to use pytorch model to evaluate tasks, converting the jax checkpoint to pytorch is needed:
@@ -169,6 +170,7 @@ The policy server must already be running, and the local dataset must exist at
 ```bash
 python ./scripts/autobio_scripts/evaluate.py \
   --problem-validation-demo \
+  --problem-validation-prefix-percent 30 \
   --seed 0 \
   --time_limit 30
 ```
@@ -177,6 +179,17 @@ The demo executes the fixed prompts `open the lid of the thermal cycler` and
 `place pcrPlate into the thermal cycler`. The same `--seed` reproduces the same
 placement trajectory and frame selection. The frame is sampled uniformly from
 the first 30% of a trajectory matching `place pcrPlate into the thermal cycler`.
+Set `--problem-validation-prefix-percent PERCENT` to change that sampling
+window; for example, `50` samples uniformly from the first 50% of the selected
+trajectory. Valid values are greater than 0 and at most 100.
+After the first prompt satisfies its success predicate, VLA inference stops for
+that prompt. The demo then plans a collision-checked RRT path for the sampled
+state's six arm joints, executes every valid RRT edge with low-level
+interpolation, and restores the sampled gripper value separately. If RRT cannot
+find a path, the run prints
+`RRT_FAILED_SKIP_ACTION` and skips the failed arm motion instead of falling back
+to direct interpolation.
+The restore motion is included in the same replay video as both VLA prompts.
 Front- and left-view MP4s are saved under `videos/` with the fixed
 `problem_validation_open_lid_place_pcr_plate` filename prefix.
 
@@ -198,7 +211,7 @@ python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1'
 | Mode | Transition behavior |
 | --- | --- |
 | `no-transition` | Disable transitions between prompts. This is the default mode. |
-| `baseline` | Randomly sample an initial pose directly from the dataset without retrieval, then use RRT to restore to that pose; if RRT fails, it prints `FALLBACK` and falls back to interpolation. |
+| `baseline` | Randomly sample an initial pose directly from the dataset without retrieval, then use RRT to restore to that pose; if RRT fails, it prints `RRT_FAILED_SKIP_ACTION` and skips the failed arm motion. |
 | `no-retrieval` | Do not provide a target pose. Run the planning/coding agents only, and do not append final target-pose restoration. |
 | `no-agent` | Retrieve the target pose, skip planning/coding agents, and directly interpolate to the retrieved pose. |
 | `full` | Full Sci-VLA transition pipeline: retrieval, planning agent, coding/primitive execution, and final target-pose restoration. |

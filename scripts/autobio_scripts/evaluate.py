@@ -82,7 +82,14 @@ def apply_problem_validation_demo_profile(args) -> ProblemValidationDemoConfig |
     if not args.problem_validation_demo:
         return None
 
-    config = ProblemValidationDemoConfig()
+    prefix_percent = float(getattr(args, "problem_validation_prefix_percent", 30.0))
+    if not np.isfinite(prefix_percent) or not 0.0 < prefix_percent <= 100.0:
+        raise ValueError(
+            "Problem-validation prefix percent must be in (0, 100], "
+            f"got {prefix_percent}"
+        )
+
+    config = ProblemValidationDemoConfig(prefix_fraction=prefix_percent / 100.0)
     args.task = config.task_name
     args.prompts = ",".join(config.prompts)
     args.num_episodes = 1
@@ -555,6 +562,16 @@ def parse_args():
         action="store_true",
         help="Run the fixed thermal-cycler problem validation demo profile.",
     )
+    parser.add_argument(
+        "--problem-validation-prefix-percent",
+        type=float,
+        default=30.0,
+        metavar="PERCENT",
+        help=(
+            "In problem-validation mode, sample the target state uniformly from "
+            "the first PERCENT%% of the matching trajectory (default: 30)."
+        ),
+    )
     parser.add_argument("--task", type=str, default="pickup", help="Task name")
     parser.add_argument("--num_episodes", type=int, default=1, help="Number of episodes to evaluate")
     parser.add_argument("--image_history", type=int, default=0, help="Image history for the policy")
@@ -666,6 +683,30 @@ def parse_args():
     )
     parser.add_argument("--llm-local-retrieval-cutoff", type=float, default=None, help="Local fuzzy qpos prompt match cutoff")
     parser.add_argument(
+        "--ready-memory-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use ReadyStateAgent visual A/B retrieval before transition planning.",
+    )
+    parser.add_argument("--ready-memory-db", type=str, default=None, help="Pre-extracted ready memory index JSON")
+    parser.add_argument("--ready-memory-repo-id", type=str, default=None, help="LeRobot repo id fallback for ReadyStateAgent retrieval")
+    parser.add_argument("--ready-memory-episode-index", type=int, default=None, help="Optional LeRobot episode index for ReadyStateAgent")
+    parser.add_argument(
+        "--ready-memory-window-size",
+        type=float,
+        default=None,
+        help="Initial ReadyStateAgent A/B window length as a trajectory percentage N; 20 means 20%%",
+    )
+    parser.add_argument("--ready-memory-min-frame-ratio", type=float, default=None, help="Minimum selected frame ratio to avoid frame 0")
+    parser.add_argument(
+        "--ready-memory-max-iterations",
+        type=int,
+        default=None,
+        help="Maximum ReadyStateAgent A/B judgements (default: 4)",
+    )
+    parser.add_argument("--ready-memory-match-cutoff", type=float, default=None, help="Fuzzy task prompt cutoff for ready memory index")
+    parser.add_argument("--ready-memory-front-image-key", type=str, default=None, help="LeRobot image key for ReadyStateAgent repo mode")
+    parser.add_argument(
         "--llm-thinking",
         type=str,
         default="auto",
@@ -720,6 +761,7 @@ if __name__ == "__main__":
             f"experiment_mode={args.experiment_mode} "
             f"use_transition_generation={args.use_transition_generation} "
             f"transition_mode={args.transition_mode} "
+            f"prefix_percent={problem_validation_demo_config.prefix_fraction * 100:g} "
             f"no_planning={args.no_planning} "
             f"no_interpolation={args.no_interpolation} "
             f"no_retrieval={args.no_retrieval}"
@@ -745,6 +787,15 @@ if __name__ == "__main__":
         "image_quality": args.llm_image_quality,
         "local_retrieval_first": args.llm_local_retrieval_first,
         "local_retrieval_cutoff": args.llm_local_retrieval_cutoff,
+        "ready_memory_enabled": args.ready_memory_enabled,
+        "ready_memory_db_path": args.ready_memory_db,
+        "ready_memory_repo_id": args.ready_memory_repo_id,
+        "ready_memory_episode_index": args.ready_memory_episode_index,
+        "ready_memory_window_size": args.ready_memory_window_size,
+        "ready_memory_min_frame_ratio": args.ready_memory_min_frame_ratio,
+        "ready_memory_max_iterations": args.ready_memory_max_iterations,
+        "ready_memory_match_cutoff": args.ready_memory_match_cutoff,
+        "ready_memory_front_image_key": args.ready_memory_front_image_key,
         "thinking": args.llm_thinking,
         "backend_mode": args.llm_backend_mode,
     }

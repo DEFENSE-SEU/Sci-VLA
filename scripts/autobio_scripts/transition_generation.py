@@ -19,6 +19,8 @@ from camera_calibration_enhancement import (
     format_spatial_context_for_llm,
 )
 
+MIN_TRANSITION_MOTION_STEPS = 100
+
 
 class NoValidQposCandidateError(ValueError):
     def __init__(
@@ -84,6 +86,13 @@ _TRANSITION_EXPERT_SELF_ALLOWLIST = {
     "task",
 }
 
+_DIRECT_EXECUTE_MOTION_CALLS = {
+    "interpolate",
+    "move_to",
+    "move_to_target_qpos",
+    "path_follow",
+}
+
 
 def _self_attr_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
@@ -117,6 +126,25 @@ def _find_unknown_self_attribute_loads(tree: ast.AST) -> list[tuple[str, int]]:
             seen.add(key)
             unknown.append(key)
     return unknown
+
+
+def _find_direct_execute_motion_calls(tree: ast.AST) -> list[tuple[str, int]]:
+    calls: list[tuple[str, int]] = []
+    for class_node in [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]:
+        for method in [node for node in class_node.body if isinstance(node, ast.FunctionDef) and node.name == "execute"]:
+            seen = set()
+            for node in ast.walk(method):
+                if not isinstance(node, ast.Call):
+                    continue
+                attr_name = _self_attr_name(node.func)
+                if attr_name not in _DIRECT_EXECUTE_MOTION_CALLS:
+                    continue
+                key = (attr_name, getattr(node, "lineno", 0))
+                if key in seen:
+                    continue
+                seen.add(key)
+                calls.append(key)
+    return calls
 
 
 def _sanitize_error_text(error: Exception, max_len: int = 500) -> str:
@@ -242,6 +270,17 @@ def validate_code(code):
     try:
         # 尝试解析代码
         tree = ast.parse(code)
+        direct_motion_calls = _find_direct_execute_motion_calls(tree)
+        if direct_motion_calls:
+            details = ", ".join(
+                f"self.{name} (line {line})" for name, line in direct_motion_calls[:5]
+            )
+            return (
+                False,
+                "Direct non-RRT motion call in execute: "
+                f"{details}. Use execute_transition_commands, move_to_rrt, or move_to_target_qpos_rrt.",
+            )
+
         unknown_self_attrs = _find_unknown_self_attribute_loads(tree)
         if unknown_self_attrs:
             details = ", ".join(
@@ -742,6 +781,13 @@ def _optional_positive_int(value, *, default: int | None = None, name: str) -> i
     return result
 
 
+def _motion_steps_or_none(value) -> int | None:
+    steps = _optional_positive_int(value, default=None, name="steps")
+    if steps is None:
+        return None
+    return max(MIN_TRANSITION_MOTION_STEPS, steps)
+
+
 def _compact_number(value: float) -> int | float:
     value = float(value)
     return int(value) if value.is_integer() else value
@@ -796,7 +842,7 @@ def _normalize_transition_command(command: dict) -> dict | None:
         if not np.isfinite(distance_m) or abs(distance_m) > 0.25:
             raise ValueError(f"Invalid translate distance_m: {distance_m}")
         normalized = {"op": "translate", "axis": axis, "distance_m": _compact_number(distance_m)}
-        steps = _optional_positive_int(command.get("steps"), default=None, name="steps")
+        steps = _motion_steps_or_none(command.get("steps"))
         if steps is not None:
             normalized["steps"] = steps
         return normalized
@@ -813,7 +859,7 @@ def _normalize_transition_command(command: dict) -> dict | None:
         if not np.isfinite(angle_deg) or abs(angle_deg) > 180.0:
             raise ValueError(f"Invalid rotate angle_deg: {angle_deg}")
         normalized = {"op": "rotate", "axis": axis, "angle_deg": _compact_number(angle_deg)}
-        steps = _optional_positive_int(command.get("steps"), default=None, name="steps")
+        steps = _motion_steps_or_none(command.get("steps"))
         if steps is not None:
             normalized["steps"] = steps
         return normalized
@@ -924,6 +970,7 @@ def _format_ee_reachability_for_prompt(enabled: bool) -> str:
     return (
         "Planning verification only enforces per-command movement limits: "
         "translate abs(distance_m) <= 0.25m and rotate abs(angle_deg) <= 180. "
+        f"Use at least {MIN_TRANSITION_MOTION_STEPS} steps for every translate/rotate command. "
         "It does not check IK reachability."
     )
 
@@ -1180,7 +1227,8 @@ def _local_plan_verification_failure(error: Exception) -> dict:
                 "problem": f"Local command validation failed: {error}",
                 "required_fix": (
                     "Regenerate a complete plan whose commands follow the allowed schema, "
-                    "single translate abs(distance_m) <= 0.25, and single rotate abs(angle_deg) <= 180."
+                    "single translate abs(distance_m) <= 0.25, single rotate abs(angle_deg) <= 180, "
+                    f"and translate/rotate steps >= {MIN_TRANSITION_MOTION_STEPS} when steps are present."
                 ),
             }
         ],
@@ -1215,7 +1263,7 @@ Verification rules:
 3. Verify plan_steps match the executable commands in order.
 4. Verify translate commands use x/y/z and abs(distance_m) <= 0.25.
 5. Verify rotate commands use x/y/z and abs(angle_deg) <= 180.
-6. Verify steps/delay values, when present, are positive integers.
+6. Verify translate/rotate steps, when present, are positive integers >= {MIN_TRANSITION_MOTION_STEPS}; delay and wait steps must be positive integers.
 7. Verify set_gripper values, when present, are numeric and in range 0..255.
 8. Gripper actuator semantics in this simulator: 0 means fully open, 255 means fully closed. It is not a normalized 0/1 flag. open_gripper maps to value 0; close_gripper maps to value 255.
 9. Do not check IK reachability or cumulative workspace reachability.
@@ -1552,13 +1600,13 @@ def _replace_execute_body(
         new_method.append("        # Restore to target pose (hard-inserted from planning JSON).")
         if final_target_qpos_candidates:
             candidate_literal = json.dumps(final_target_qpos_candidates, ensure_ascii=False)
-            new_method.append("        from transition_generation import select_target_qpos_after_transition, validate_qpos_interpolation_path")
+            new_method.append("        from transition_generation import select_target_qpos_after_transition, validate_qpos_rrt_path")
             new_method.append(f"        target_qpos_candidates = {candidate_literal}")
             new_method.append("        target_selection = select_target_qpos_after_transition(")
             new_method.append("            target_qpos_candidates,")
             new_method.append("            self.data.qpos[self.jnt_span],")
             new_method.append(f"            top_k={max(1, int(target_top_k or 3))},")
-            new_method.append("            path_validator=lambda candidate_qpos, *, selected_index: validate_qpos_interpolation_path(")
+            new_method.append("            path_validator=lambda candidate_qpos, *, selected_index: validate_qpos_rrt_path(")
             new_method.append("                self.model,")
             new_method.append("                self.data,")
             new_method.append("                self.jnt_span,")
@@ -1659,8 +1707,8 @@ target front reference image: {target_reference_text}
 
 Planning objective:
 - Safety-first, collision-avoidance.
-- Main sequence: obstacle clearance, then movement toward the restored starting pose for the next atomic task.
-- Restoration target: the target pose/image is the retrieved starting pose for the next atomic task. It describes where the robot should be restored before the next atomic task begins, not an instruction to execute that task.
+- Main sequence: obstacle clearance, then movement toward the restored target preparation pose for the next atomic task.
+- Restoration target: the target pose/image is the retrieved preparation pose for the next atomic task, i.e. the retrieved starting pose for the next atomic task. It describes where the robot should be restored before the next atomic task begins or resumes, not an instruction to execute that task.
 - After clearance, move the EE toward the restored target gripper world position using the calibrated target delta when available.
 
 Planning Rules:
@@ -1694,8 +1742,8 @@ Return strictly one JSON object with schema:
 {{
     "commands": [
         {{"op": "open_gripper", "delay": 100}},
-        {{"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 100}},
-        {{"op": "rotate", "axis": "z", "angle_deg": 30, "steps": 100}},
+        {{"op": "translate", "axis": "z", "distance_m": 0.08, "steps": {MIN_TRANSITION_MOTION_STEPS}}},
+        {{"op": "rotate", "axis": "z", "angle_deg": 30, "steps": {MIN_TRANSITION_MOTION_STEPS}}},
         {{"op": "close_gripper", "delay": 100}}
     ],
     "plan_steps": [
@@ -1718,11 +1766,12 @@ Rules:
    Example: do not output {{"op": "translate", "axis": "x", "distance_m": -0.5}}; output two translate commands with distance_m -0.25 each.
 4. rotate must use axis x/y/z and angle_deg in degrees; use negative angle_deg for negative rotation.
 5. Keep every single translate distance absolute value <= 0.25m and every single rotation <= 180 degrees.
-6. {motion_constraint_rule}
-7. plan_steps are only human-readable comments matching commands.
-8. In no-retrieval mode, restore is false and no final target-state restoration will be executed.
-9. Do not output code.
-10. Do not output markdown.
+6. Translate/rotate commands must use at least {MIN_TRANSITION_MOTION_STEPS} steps. Use more steps for larger movements; never use fewer for speed.
+7. {motion_constraint_rule}
+8. plan_steps are only human-readable comments matching commands.
+9. In no-retrieval mode, restore is false and no final target-state restoration will be executed.
+10. Do not output code.
+11. Do not output markdown.
 '''
 
 
@@ -2043,6 +2092,54 @@ def validate_qpos_interpolation_path(
                 }
 
         return {"valid": True, "reason": "path_validated", "num_steps": steps}
+    except Exception as e:
+        return {"valid": False, "reason": "validator_exception", "error": str(e)}
+
+
+def validate_qpos_rrt_path(
+    model,
+    data,
+    jnt_span,
+    candidate_qpos,
+    *,
+    num_steps_per_segment: int = 100,
+) -> dict:
+    from non_llm_transition import (
+        joint_ranges_from_model,
+        plan_joint_path_rrt,
+        validate_joint_path_in_mujoco,
+    )
+
+    try:
+        jnt_indices = list(jnt_span)
+        if len(jnt_indices) == 0:
+            return {"valid": False, "reason": "empty_jnt_span"}
+
+        start = np.asarray(data.qpos[jnt_indices], dtype=np.float64).reshape(-1)
+        target = np.asarray(candidate_qpos, dtype=np.float64).reshape(-1)[: len(jnt_indices)]
+        if target.size != len(jnt_indices) or not np.isfinite(target).all():
+            return {"valid": False, "reason": "invalid_target_qpos"}
+
+        path_plan = plan_joint_path_rrt(
+            start,
+            target,
+            path_validator=lambda path: validate_joint_path_in_mujoco(
+                model,
+                data,
+                jnt_span,
+                path,
+                num_steps_per_segment=int(num_steps_per_segment),
+            ),
+            joint_ranges=joint_ranges_from_model(model, jnt_span),
+        )
+        valid = path_plan.status != "RRT_FAILED_SKIP_ACTION" and bool(path_plan.waypoints)
+        return {
+            "valid": valid,
+            "reason": "rrt_path_validated" if valid else "rrt_failed",
+            "planner_status": path_plan.status,
+            "planner_validation": path_plan.validation,
+            "waypoint_count": len(path_plan.waypoints),
+        }
     except Exception as e:
         return {"valid": False, "reason": "validator_exception", "error": str(e)}
 
@@ -2450,6 +2547,49 @@ def transition_code_generation(
         _pick_config("local_retrieval_cutoff", "LLM_LOCAL_RETRIEVAL_CUTOFF", 0.72),
         "local_retrieval_cutoff",
     )
+    ready_memory_enabled = _to_bool(
+        _pick_config("ready_memory_enabled", "LLM_READY_MEMORY_ENABLED", False),
+        "ready_memory_enabled",
+    )
+    ready_memory_db_path = _pick_config("ready_memory_db_path", "READY_MEMORY_DB", None)
+    ready_memory_repo_id = _pick_config("ready_memory_repo_id", "READY_MEMORY_REPO_ID", None)
+    ready_memory_episode_index = _to_optional_int(
+        _pick_config("ready_memory_episode_index", "READY_MEMORY_EPISODE_INDEX", None),
+        "ready_memory_episode_index",
+    )
+    ready_memory_window_size = _to_optional_float(
+        _pick_config("ready_memory_window_size", "READY_MEMORY_WINDOW_SIZE", 20.0),
+        "ready_memory_window_size",
+    )
+    ready_memory_min_frame_ratio = _to_optional_float(
+        _pick_config("ready_memory_min_frame_ratio", "READY_MEMORY_MIN_FRAME_RATIO", 0.05),
+        "ready_memory_min_frame_ratio",
+    )
+    ready_memory_max_iterations = _to_optional_int(
+        _pick_config("ready_memory_max_iterations", "READY_MEMORY_MAX_ITERATIONS", 4),
+        "ready_memory_max_iterations",
+    )
+    ready_memory_match_cutoff = _to_optional_float(
+        _pick_config("ready_memory_match_cutoff", "READY_MEMORY_MATCH_CUTOFF", 0.5),
+        "ready_memory_match_cutoff",
+    )
+    ready_memory_front_image_key = str(
+        _pick_config("ready_memory_front_image_key", "READY_MEMORY_FRONT_IMAGE_KEY", "observation/image")
+    )
+    ready_memory_output_path = Path(
+        str(_pick_config("ready_memory_output_path", "READY_MEMORY_OUTPUT", "logs/target_ready_state_selected.json"))
+    )
+    ready_memory_image_output_dir = Path(
+        str(_pick_config("ready_memory_image_output_dir", "READY_MEMORY_IMAGE_DIR", "logs/ready_memory_images"))
+    )
+    if ready_memory_window_size is None:
+        ready_memory_window_size = 20.0
+    if ready_memory_min_frame_ratio is None:
+        ready_memory_min_frame_ratio = 0.05
+    if ready_memory_max_iterations is None:
+        ready_memory_max_iterations = 4
+    if ready_memory_match_cutoff is None:
+        ready_memory_match_cutoff = 0.5
 
     if backend_mode == "auto":
         if effective_backend_mode == "chat":
@@ -2483,6 +2623,74 @@ def transition_code_generation(
         }
         target_qpos_candidates = []
         target_front_image_paths = []
+    elif ready_memory_enabled:
+        from ready_memory_retrieval_agent import (
+            retrieve_ready_memory_from_episode,
+            retrieve_ready_memory_from_index,
+        )
+
+        ready_llm_config = {
+            "model_name": model_name,
+            "base_url": base_url,
+            "api_key": api_key,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "max_attempts": max_attempts,
+            "timeout": timeout,
+            "backend_mode": effective_backend_mode,
+            "thinking": thinking_mode,
+            "max_image_side": image_max_side,
+        }
+        if ready_memory_db_path:
+            target_retrieval_payload = retrieve_ready_memory_from_index(
+                memory_db_path=ready_memory_db_path,
+                task_prompt=task_prompt,
+                window_size=ready_memory_window_size,
+                output_path=ready_memory_output_path,
+                min_frame_ratio=ready_memory_min_frame_ratio,
+                max_iterations=ready_memory_max_iterations,
+                llm_config=ready_llm_config,
+                match_cutoff=ready_memory_match_cutoff,
+                client=client,
+            )
+        elif ready_memory_repo_id:
+            target_retrieval_payload = retrieve_ready_memory_from_episode(
+                repo_id=str(ready_memory_repo_id),
+                task_prompt=task_prompt,
+                episode_index=ready_memory_episode_index,
+                window_size=ready_memory_window_size,
+                output_path=ready_memory_output_path,
+                image_output_dir=ready_memory_image_output_dir,
+                front_image_key=ready_memory_front_image_key,
+                min_frame_ratio=ready_memory_min_frame_ratio,
+                max_iterations=ready_memory_max_iterations,
+                llm_config=ready_llm_config,
+            )
+        else:
+            raise ValueError(
+                "Ready memory retrieval is enabled, but neither READY_MEMORY_DB "
+                "nor READY_MEMORY_REPO_ID is configured."
+            )
+
+        target_state = target_retrieval_payload.get(
+            "target_state",
+            target_retrieval_payload.get("target_qpos"),
+        )
+        target_joint_pos_arr = np.asarray(target_state, dtype=np.float64).reshape(-1)
+        if target_joint_pos_arr.size == 0 or not np.isfinite(target_joint_pos_arr).all():
+            raise ValueError("ReadyStateAgent returned an invalid empty/nonfinite target_state")
+        target_retrieval_payload = {
+            **target_retrieval_payload,
+            "retrieval_source": target_retrieval_payload.get("retrieval_source", "ready_memory"),
+            "selected_qpos": target_joint_pos_arr.tolist(),
+            "target_qpos_candidates": [target_joint_pos_arr.tolist()],
+            "target_front_image_paths": target_retrieval_payload.get("target_front_image_paths")
+            or [target_retrieval_payload.get("target_front_image_path")],
+        }
+        _write_json("logs/target_qpos_selected.json", target_retrieval_payload)
+        target_qpos_candidates = target_retrieval_payload.get("target_qpos_candidates", [])
+        target_front_image_paths = target_retrieval_payload.get("target_front_image_paths", [])
     else:
         def retrieve_once(_attempt_index: int):
             return retrieve_target_qpos_with_agent(
@@ -2537,6 +2745,7 @@ def transition_code_generation(
     motion_constraint_rule = (
         "The planning verifier only enforces per-command movement limits: every translate "
         "abs(distance_m) <= 0.25m and every rotate abs(angle_deg) <= 180. "
+        f"Every translate/rotate command must use steps >= {MIN_TRANSITION_MOTION_STEPS} when steps are present. "
         "It does not check IK reachability or cumulative workspace reachability."
     )
     if not no_planning:
@@ -2576,7 +2785,7 @@ You are a visual obstacle perception tool for robot transition planning.
 Task prompt:
 {task_prompt}
 
-Use the calibrated front and side images to identify physical objects that may obstruct the gripper when moving from the current task state toward the retrieved starting pose for the next atomic task.
+Use the calibrated front and side images to identify physical objects that may obstruct the gripper when moving from the current task state toward the retrieved target preparation pose for the next atomic task.
 
 Return strictly one JSON object:
 {{
@@ -2633,16 +2842,27 @@ Rules:
             except Exception as e:
                 print(f"[Calibration] stage-0 obstacle perception failed: {_sanitize_error_text(e)}")
 
-    target_reference_text = (
-        "the target task's retrieved initial front-view image, aligned with the retrieved target state candidates."
-        if not no_retrieval
-        else "unavailable. No retrieved target qpos or target initial image is provided in this no-retrieval ablation."
-    )
-    target_binding_text = (
-        "The third image, when present, is the TARGET INITIAL FRONT reference view."
-        if not no_retrieval
-        else "The TARGET INITIAL FRONT reference view is unavailable; plan only from the current views and target prompt."
-    )
+    if no_retrieval:
+        target_reference_text = (
+            "unavailable. No retrieved target qpos or target reference image is provided in this no-retrieval ablation."
+        )
+        target_binding_text = (
+            "The TARGET FRONT reference view is unavailable; plan only from the current views and target prompt."
+        )
+    elif ready_memory_enabled:
+        target_reference_text = (
+            "the target task's ReadyStateAgent-retrieved READY FRONT reference image, aligned with the retrieved target_state."
+        )
+        target_binding_text = (
+            "The third image, when present, is the TARGET READY FRONT reference view selected by ReadyStateAgent."
+        )
+    else:
+        target_reference_text = (
+            "the target task's retrieved initial front-view image, aligned with the retrieved target state candidates."
+        )
+        target_binding_text = (
+            "The third image, when present, is the TARGET INITIAL FRONT reference view."
+        )
     restore_schema_fields = _format_restore_schema_fields(
         no_retrieval=no_retrieval,
         target_arm_qpos=target_arm_qpos,

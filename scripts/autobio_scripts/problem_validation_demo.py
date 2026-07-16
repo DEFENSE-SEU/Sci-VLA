@@ -20,7 +20,7 @@ class ProblemValidationDemoConfig:
     dataset_repo_id: str = "mani_thermalcycler"
     dataset_root: Path | None = None
     prefix_fraction: float = 0.30
-    interpolation_steps: int = 250
+    restore_steps_per_segment: int = 250
     video_filename_prefix: str = "problem_validation_open_lid_place_pcr_plate"
 
 
@@ -58,7 +58,7 @@ class PromptRunController:
     def should_continue(self, current_time: float) -> bool:
         if self.success_time is None:
             return current_time - self.start_time < self.time_limit
-        return current_time - self.success_time < self.post_success_seconds
+        return False
 
     def observe(self, current_time: float, *, success: bool | None) -> bool:
         if success is True and self.success_time is None:
@@ -237,7 +237,7 @@ def execute_problem_validation_sequence(
         )
 
     sampled_state = sample_state(config, rng)
-    restore_state(sampled_state, config.interpolation_steps)
+    restore_state(sampled_state, config.restore_steps_per_segment)
     second_healthy, second_success = run_prompt(config.prompts[1], 0.0)
     return ProblemValidationDemoResult(
         success=second_healthy and second_success,

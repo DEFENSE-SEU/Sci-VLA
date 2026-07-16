@@ -162,6 +162,49 @@ class TransitionExpert:
     assert "self.move_to_target_qpos(target_qpos)" not in code
 
 
+def test_replace_execute_body_uses_rrt_validation_for_target_candidates():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    template_code = """
+class TransitionExpert:
+    def __init__(self):
+        pass
+
+    def execute(self):
+        pass
+""".strip()
+
+    code = transition_generation._replace_execute_body(
+        template_code,
+        execute_body_code='self.execute_transition_commands([{"op": "wait", "steps": 1}])',
+        final_target_qpos=[1, 2, 3, 4, 5, 6],
+        final_target_gripper=0.0,
+        include_final_restore=True,
+        final_target_qpos_candidates=[[1, 2, 3, 4, 5, 6, 0]],
+    )
+
+    assert "validate_qpos_rrt_path" in code
+    assert "validate_qpos_interpolation_path" not in code
+
+
+def test_validate_code_rejects_direct_motion_in_execute_body():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    code = """
+class TransitionExpert:
+    def move_to(self, pose):
+        pass
+
+    def execute(self):
+        self.move_to(None)
+""".strip()
+
+    is_valid, validation_msg = transition_generation.validate_code(code)
+
+    assert is_valid is False
+    assert "Direct non-RRT motion call in execute" in validation_msg
+
+
 def test_no_retrieval_without_final_restore_does_not_require_final_target_qpos():
     transition_generation = _import_transition_generation_with_stubs()
 

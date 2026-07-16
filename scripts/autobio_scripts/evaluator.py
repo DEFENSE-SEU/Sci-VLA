@@ -1,10 +1,12 @@
 from collections import deque
 from contextlib import contextmanager
+import importlib
 import inspect
 from typing import Callable, TypeAlias
 
 import numpy as np
 import mujoco
+import non_llm_transition
 import pathlib #
 import imageio #
 import time #
@@ -105,6 +107,89 @@ def restore_robot_state_direct(
         data.ctrl[action_indices] = current + alpha * (target - current)
         task.step_and_log({})
     return steps
+
+
+def restore_robot_state_rrt(
+    *,
+    model,
+    task,
+    data,
+    state_indices,
+    action_indices,
+    target_state,
+    rng: np.random.Generator,
+    steps_per_segment: int = 250,
+    validation_steps_per_segment: int = 100,
+    gripper_settle_steps: int = 50,
+) -> dict:
+    """Restore six arm joints with RRT, then restore the gripper separately."""
+    state_indices = list(state_indices)
+    action_indices = list(action_indices)
+    target = np.asarray(target_state, dtype=np.float64).reshape(-1)
+    if len(state_indices) != 7 or len(action_indices) != 7:
+        raise ValueError(
+            "Problem-validation RRT restore requires six arm joints and one gripper "
+            f"(state={len(state_indices)}, action={len(action_indices)})"
+        )
+    if target.size != 7 or not np.isfinite(target).all():
+        raise ValueError(
+            f"Problem-validation RRT target must contain 7 finite values, got {target.size}"
+        )
+
+    arm_state_indices = state_indices[:-1]
+    arm_action_indices = action_indices[:-1]
+    current_arm = np.asarray(data.qpos[arm_state_indices], dtype=np.float64).reshape(-1)
+    target_arm = target[:-1]
+    if current_arm.size != 6 or not np.isfinite(current_arm).all():
+        raise ValueError(
+            "Problem-validation RRT start must contain 6 finite arm-joint values, "
+            f"got {current_arm.size}"
+        )
+
+    def validate_path(waypoints):
+        return non_llm_transition.validate_joint_path_in_mujoco(
+            model,
+            data,
+            arm_state_indices,
+            waypoints,
+            num_steps_per_segment=validation_steps_per_segment,
+        )
+
+    path_plan = non_llm_transition.plan_joint_path_rrt(
+        current_arm,
+        target_arm,
+        path_validator=validate_path,
+        joint_ranges=non_llm_transition.joint_ranges_from_model(model, arm_state_indices),
+        rng=rng,
+    )
+    rrt_failed = path_plan.status == "RRT_FAILED_SKIP_ACTION" or not path_plan.waypoints
+    if rrt_failed:
+        print("[ProblemValidationDemo] RRT_FAILED_SKIP_ACTION")
+
+    if rrt_failed:
+        executed_arm_steps = 0
+    else:
+        executed_arm_steps = non_llm_transition.execute_interpolated_joint_path(
+            task=task,
+            data=data,
+            act_span=arm_action_indices,
+            waypoints=path_plan.waypoints,
+            steps_per_segment=steps_per_segment,
+        )
+
+    executed_gripper_steps = max(0, int(gripper_settle_steps))
+    data.ctrl[action_indices[-1]] = float(target[-1])
+    for _ in range(executed_gripper_steps):
+        task.step_and_log({})
+
+    return {
+        "planner_status": path_plan.status,
+        "planner_validation": path_plan.validation,
+        "waypoint_count": len(path_plan.waypoints),
+        "executed_arm_steps": executed_arm_steps,
+        "executed_gripper_steps": executed_gripper_steps,
+        "fallback": rrt_failed,
+    }
 
 
 def restore_prompt_initial_state_direct(
@@ -843,13 +928,7 @@ class Evaluator:
                                 "[ProblemValidationDemo] "
                                 f"first_success_time={controller.success_time:.6f}"
                             )
-                    if tail_complete and use_non_timeout_controller:
-                        if post_success_seconds > 0.0:
-                            print(
-                                "[ProblemValidationDemo] "
-                                f"tail_complete_time={self.data.time:.6f} "
-                                f"elapsed={self.data.time - controller.success_time:.6f}"
-                            )
+                    if tail_complete:
                         return True, True
             return True, check_prompt_success(prompt)
 
@@ -888,7 +967,7 @@ class Evaluator:
                         f"success={atomic_result['success']} prompt={prompt!r}"
                     )
 
-            def restore_demo_state(sampled_state, interpolation_steps: int):
+            def restore_demo_state(sampled_state, restore_steps_per_segment: int):
                 nonlocal transition_total, transition_count
                 print(
                     "[ProblemValidationDemo] "
@@ -914,7 +993,7 @@ class Evaluator:
                     if self.data.warning.number.any():
                         warning_number = np.asarray(self.data.warning.number).copy()
                         raise RuntimeError(
-                            "Problem-validation interpolation stopped after a MuJoCo warning: "
+                            "Problem-validation RRT restore stopped after a MuJoCo warning: "
                             f"warning.number={warning_number.tolist()}"
                         )
                     transition_collision_count += count_robot_object_collision_contacts(
@@ -925,13 +1004,15 @@ class Evaluator:
 
                 self.task.step_and_log = step_and_log_with_capture
                 try:
-                    restored_steps = restore_robot_state_direct(
+                    restore_result = restore_robot_state_rrt(
+                        model=self.model,
                         task=self.task,
                         data=self.data,
                         state_indices=self.task_info["state_indices"],
                         action_indices=self.task_info["action_indices"],
                         target_state=sampled_state.state,
-                        num_steps=interpolation_steps,
+                        rng=transition_rng,
+                        steps_per_segment=restore_steps_per_segment,
                     )
                 finally:
                     self.task.step_and_log = original_step_and_log
@@ -942,7 +1023,12 @@ class Evaluator:
                 transition_collision_counts[1] = int(transition_collision_count)
                 print(
                     "[ProblemValidationDemo] "
-                    f"restore_steps={restored_steps} "
+                    f"planner_status={restore_result['planner_status']} "
+                    f"planner_validation={restore_result['planner_validation']} "
+                    f"waypoints={restore_result['waypoint_count']} "
+                    f"arm_steps={restore_result['executed_arm_steps']} "
+                    f"gripper_steps={restore_result['executed_gripper_steps']} "
+                    f"fallback={restore_result['fallback']} "
                     f"robot_object_contacts={transition_collision_count}"
                 )
 
@@ -1097,7 +1183,11 @@ class Evaluator:
                     transition_infer_elapsed = time.perf_counter() - transition_infer_start_wall
                     transition_infer_total += transition_infer_elapsed
 
-                    from transition_template import TransitionExpert
+                    import transition_template
+
+                    importlib.invalidate_caches()
+                    transition_template = importlib.reload(transition_template)
+                    TransitionExpert = transition_template.TransitionExpert
                     expert = TransitionExpert(self.model, self.data, self.task)
                     original_step_and_log = self.task.step_and_log
 
@@ -1330,6 +1420,10 @@ class Evaluator:
                     if use_task_judge and action == "retry":
                         execute_retry_restore_to_initial(prompt_initial_state, timing_label)
                     else:
+                        print(
+                            f"[Transition] prompt_index={prompt_index} "
+                            f"completed_prompt={prompt!r} target_prompt={target_prompt!r}"
+                        )
                         execute_transition_to(target_prompt, timing_label, transition_index=prompt_index + 1)
 
                 if action == "retry":

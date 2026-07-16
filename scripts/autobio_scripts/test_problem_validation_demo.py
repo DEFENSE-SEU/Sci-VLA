@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import evaluator as evaluator_module
-from evaluator import Evaluator, restore_robot_state_direct
+from evaluator import Evaluator, restore_robot_state_direct, restore_robot_state_rrt
 from problem_validation_demo import (
     ProblemValidationDemoConfig,
     PromptRunController,
@@ -76,6 +76,122 @@ def test_restore_robot_state_does_not_modify_non_robot_qpos():
     )
 
     np.testing.assert_array_equal(data.qpos, original_qpos)
+
+
+def test_restore_robot_state_rrt_plans_arm_then_restores_gripper(monkeypatch):
+    task = _FakeTask()
+    data = _FakeData()
+    data.qpos[:] = np.arange(0.0, 0.7, 0.1)
+    target = np.arange(1.0, 8.0)
+    rng = np.random.default_rng(23)
+    waypoints = [data.qpos[:6].copy(), np.full(6, 0.5), target[:6].copy()]
+    planner_calls = []
+    validator_calls = []
+    executor_calls = []
+
+    def fake_validate(model, validation_data, jnt_span, path, *, num_steps_per_segment):
+        validator_calls.append(
+            (model, validation_data, list(jnt_span), path, num_steps_per_segment)
+        )
+        return {"valid": True, "reason": "test_path"}
+
+    def fake_plan(start, goal, *, path_validator, joint_ranges, rng):
+        planner_calls.append((start.copy(), goal.copy(), joint_ranges, rng))
+        validation = path_validator(waypoints)
+        return SimpleNamespace(waypoints=waypoints, status="rrt", validation=validation)
+
+    def fake_execute(*, task, data, act_span, waypoints, steps_per_segment):
+        executor_calls.append((list(act_span), waypoints, steps_per_segment))
+        data.ctrl[list(act_span)] = waypoints[-1]
+        for _ in range(6):
+            task.step_and_log({})
+        return 6
+
+    monkeypatch.setattr(evaluator_module.non_llm_transition, "validate_joint_path_in_mujoco", fake_validate)
+    monkeypatch.setattr(evaluator_module.non_llm_transition, "plan_joint_path_rrt", fake_plan)
+    monkeypatch.setattr(evaluator_module.non_llm_transition, "execute_interpolated_joint_path", fake_execute)
+
+    model = object()
+    result = restore_robot_state_rrt(
+        model=model,
+        task=task,
+        data=data,
+        state_indices=range(7),
+        action_indices=range(7),
+        target_state=target,
+        rng=rng,
+        steps_per_segment=3,
+        validation_steps_per_segment=11,
+        gripper_settle_steps=4,
+    )
+
+    np.testing.assert_allclose(planner_calls[0][0], np.arange(0.0, 0.6, 0.1))
+    np.testing.assert_allclose(planner_calls[0][1], target[:6])
+    assert planner_calls[0][2] is None
+    assert planner_calls[0][3] is rng
+    assert validator_calls[0] == (model, data, [0, 1, 2, 3, 4, 5], waypoints, 11)
+    assert executor_calls == [([0, 1, 2, 3, 4, 5], waypoints, 3)]
+    np.testing.assert_allclose(data.ctrl, target)
+    assert task.steps == 10
+    assert result == {
+        "planner_status": "rrt",
+        "planner_validation": {"valid": True, "reason": "test_path"},
+        "waypoint_count": 3,
+        "executed_arm_steps": 6,
+        "executed_gripper_steps": 4,
+        "fallback": False,
+    }
+
+
+def test_restore_robot_state_rrt_logs_and_skips_failed_rrt_action(
+    monkeypatch,
+    capsys,
+):
+    task = _FakeTask()
+    data = _FakeData()
+    target = np.arange(1.0, 8.0)
+    executed_paths = []
+
+    monkeypatch.setattr(
+        evaluator_module.non_llm_transition,
+        "plan_joint_path_rrt",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            waypoints=[],
+            status="RRT_FAILED_SKIP_ACTION",
+            validation={"valid": False, "reason": "rrt_failed_skip_action"},
+        ),
+    )
+
+    def fake_execute(*, task, data, act_span, waypoints, steps_per_segment):
+        executed_paths.append(waypoints)
+        data.ctrl[list(act_span)] = waypoints[-1]
+        task.step_and_log({})
+        return 1
+
+    monkeypatch.setattr(
+        evaluator_module.non_llm_transition,
+        "execute_interpolated_joint_path",
+        fake_execute,
+    )
+
+    result = restore_robot_state_rrt(
+        model=object(),
+        task=task,
+        data=data,
+        state_indices=range(7),
+        action_indices=range(7),
+        target_state=target,
+        rng=np.random.default_rng(0),
+        steps_per_segment=2,
+        gripper_settle_steps=1,
+    )
+
+    assert "RRT_FAILED_SKIP_ACTION" in capsys.readouterr().out
+    assert executed_paths == []
+    assert result["fallback"] is True
+    assert result["planner_status"] == "RRT_FAILED_SKIP_ACTION"
+    np.testing.assert_allclose(data.ctrl[:6], np.zeros(6))
+    assert data.ctrl[-1] == target[-1]
 
 
 def _make_fake_evaluator(check_prompt):
@@ -148,6 +264,48 @@ def _make_fake_evaluator(check_prompt):
         return np.zeros((1, 7), dtype=np.float64)
 
     return evaluator, policy, events, data
+
+
+def _patch_demo_rrt_restore(monkeypatch):
+    calls = []
+
+    def fake_restore(
+        *,
+        model,
+        task,
+        data,
+        state_indices,
+        action_indices,
+        target_state,
+        rng,
+        steps_per_segment,
+        **_kwargs,
+    ):
+        target = np.asarray(target_state, dtype=np.float64)
+        action_indices = list(action_indices)
+        start = np.asarray(data.qpos[list(state_indices)], dtype=np.float64)
+        calls.append(
+            {
+                "model": model,
+                "rng": rng,
+                "steps_per_segment": steps_per_segment,
+                "target": target.copy(),
+            }
+        )
+        for alpha in np.linspace(1.0 / steps_per_segment, 1.0, steps_per_segment):
+            data.ctrl[action_indices] = start + alpha * (target - start)
+            task.step_and_log({})
+        return {
+            "planner_status": "rrt",
+            "planner_validation": {"valid": True, "reason": "fake_test_path"},
+            "waypoint_count": 2,
+            "executed_arm_steps": steps_per_segment,
+            "executed_gripper_steps": 0,
+            "fallback": False,
+        }
+
+    monkeypatch.setattr(evaluator_module, "restore_robot_state_rrt", fake_restore)
+    return calls
 
 
 def _make_video_evaluator(tmp_path):
@@ -300,7 +458,7 @@ def test_ordinary_prompt_still_stops_on_first_success():
     assert timing["atomic_task_results"][0]["success"] is True
 
 
-def test_ordinary_timeout_still_uses_final_predicate_state():
+def test_ordinary_timeout_stops_on_transient_success():
     evaluator, policy, events, _data = _make_fake_evaluator(
         lambda _prompt, current_time: current_time == 2.0
     )
@@ -313,13 +471,13 @@ def test_ordinary_timeout_still_uses_final_predicate_state():
         intervention_mode="timeout",
     )
 
-    assert not success
-    assert events["policy_prompts"] == ["ordinary timeout prompt"] * 3
+    assert success
+    assert events["policy_prompts"] == ["ordinary timeout prompt"]
     assert timing["atomic_task_results"] == [
         {
             "prompt_index": 0,
             "prompt": "ordinary timeout prompt",
-            "success": False,
+            "success": True,
             "attempt_index": 0,
         }
     ]
@@ -347,7 +505,7 @@ def test_ordinary_multi_prompt_path_still_runs_each_prompt_once(monkeypatch, tmp
     assert events["finishes"] == events["render_finishes"] == 1
 
 
-def test_demo_forces_non_timeout_tail_and_stops_inside_action_chunk(
+def test_demo_forces_non_timeout_and_stops_vla_on_first_success(
     monkeypatch,
     capsys,
     tmp_path,
@@ -355,13 +513,13 @@ def test_demo_forces_non_timeout_tail_and_stops_inside_action_chunk(
     config = replace(
         ProblemValidationDemoConfig(dataset_root=tmp_path),
         post_success_seconds=2.5,
-        interpolation_steps=1,
+        restore_steps_per_segment=1,
     )
     evaluator, _default_policy, events, data = _make_fake_evaluator(
         lambda prompt, current_time: (
             current_time == 2.0
             if prompt == config.prompts[0]
-            else current_time == 7.0
+            else current_time == 4.0
         )
     )
     sampled = SampledRobotState(
@@ -380,6 +538,7 @@ def test_demo_forces_non_timeout_tail_and_stops_inside_action_chunk(
         "count_robot_object_collision_contacts",
         lambda _model, _data: 0,
     )
+    _patch_demo_rrt_restore(monkeypatch)
 
     def chunked_policy(_observation):
         events["policy_prompts"].append(evaluator.task_info["prefix"])
@@ -398,17 +557,15 @@ def test_demo_forces_non_timeout_tail_and_stops_inside_action_chunk(
     assert success
     assert events["policy_prompts"] == list(config.prompts)
     assert [result["success"] for result in timing["atomic_task_results"]] == [True, True]
-    assert events["videos"] == [(True, config.video_filename_prefix, 5)]
-    assert data.time == 7.0
-    tail_elapsed = float(re.search(r"tail_complete_time=.* elapsed=([0-9.]+)", output).group(1))
-    assert tail_elapsed >= config.post_success_seconds
-    assert tail_elapsed - config.post_success_seconds <= 1.0
+    assert events["videos"] == [(True, config.video_filename_prefix, 2)]
+    assert data.time == 4.0
+    assert "tail_complete_time=" not in output
 
 
 def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, capsys, tmp_path):
     config = replace(
         ProblemValidationDemoConfig(dataset_root=tmp_path),
-        interpolation_steps=3,
+        restore_steps_per_segment=3,
     )
     evaluator, policy, events, data = _make_fake_evaluator(
         lambda prompt, current_time: (
@@ -416,9 +573,11 @@ def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, caps
         )
     )
     rng_draws = []
+    sample_rngs = []
 
     def fake_sample(sample_config, rng):
         assert sample_config is config
+        sample_rngs.append(rng)
         rng_draws.append(int(rng.integers(1_000_000)))
         return SampledRobotState(
             state=np.arange(1.0, 8.0),
@@ -437,6 +596,7 @@ def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, caps
         "count_robot_object_collision_contacts",
         lambda _model, _data: 1,
     )
+    restore_calls = _patch_demo_rrt_restore(monkeypatch)
 
     success, timing = evaluator.evaluate(
         policy,
@@ -449,16 +609,17 @@ def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, caps
 
     output = capsys.readouterr().out
     assert success
-    assert events["policy_prompts"] == [config.prompts[0]] * 6 + [config.prompts[1]]
+    assert events["policy_prompts"] == [config.prompts[0], config.prompts[1]]
     assert rng_draws == [int(np.random.default_rng(23).integers(1_000_000))]
-    assert events["captures"] == 11
+    assert restore_calls[0]["rng"] is sample_rngs[0]
+    assert events["captures"] == 6
     assert events["finishes"] == events["render_finishes"] == 1
-    assert events["videos"] == [(True, config.video_filename_prefix, 7)]
+    assert events["videos"] == [(True, config.video_filename_prefix, 2)]
     assert [result["prompt"] for result in timing["atomic_task_results"]] == list(config.prompts)
     assert timing["transition_count"] == 1
     assert timing["transition_collision_counts"] == {"1": 3}
     assert output.count("[ProblemValidationDemo] first_success_time=") == 1
-    assert output.count("[ProblemValidationDemo] tail_complete_time=") == 1
+    assert output.count("[ProblemValidationDemo] tail_complete_time=") == 0
     assert "episode=7" in output
     assert "length=10" in output
     assert "prefix_size=3" in output
@@ -467,18 +628,22 @@ def test_demo_runs_latched_tail_restore_and_second_prompt_once(monkeypatch, caps
     assert f"task={config.prompts[1]!r}" in output
     assert f"dataset_root={tmp_path}" in output
     assert "state=[1. 2. 3. 4. 5. 6. 7.]" in output
-    assert "restore_steps=3" in output
+    assert "planner_status=rrt" in output
+    assert "waypoints=2" in output
+    assert "arm_steps=3" in output
+    assert "gripper_steps=0" in output
+    assert "fallback=False" in output
     assert events["video_strict"] == [True]
     np.testing.assert_allclose(events["policy_ctrl"][-1], np.arange(1.0, 8.0))
 
 
-def test_demo_restore_warning_stops_interpolation_and_second_prompt(
+def test_demo_restore_warning_stops_rrt_restore_and_second_prompt(
     monkeypatch,
     tmp_path,
 ):
     config = replace(
         ProblemValidationDemoConfig(dataset_root=tmp_path),
-        interpolation_steps=4,
+        restore_steps_per_segment=4,
     )
     evaluator, policy, events, data = _make_fake_evaluator(
         lambda prompt, current_time: (
@@ -514,8 +679,9 @@ def test_demo_restore_warning_stops_interpolation_and_second_prompt(
 
     evaluator.task.step_and_log = step_and_warn
     monkeypatch.setattr(evaluator_module, "sample_problem_validation_state", sample_state)
+    _patch_demo_rrt_restore(monkeypatch)
 
-    with pytest.raises(RuntimeError, match=r"interpolation.*warning"):
+    with pytest.raises(RuntimeError, match=r"RRT restore.*warning"):
         evaluator.evaluate(
             policy,
             time_limit=10.0,
@@ -527,7 +693,7 @@ def test_demo_restore_warning_stops_interpolation_and_second_prompt(
     assert restore_steps == 2
     assert config.prompts[1] not in events["policy_prompts"]
     assert events["finishes"] == events["render_finishes"] == 1
-    assert events["videos"] == [(False, config.video_filename_prefix, 6)]
+    assert events["videos"] == [(False, config.video_filename_prefix, 1)]
 
 
 def test_invalid_demo_prompts_raise_value_error_before_reset(tmp_path):
@@ -554,7 +720,7 @@ def test_invalid_demo_prompts_raise_value_error_before_reset(tmp_path):
 
 
 def test_demo_first_prompt_failure_does_not_sample(monkeypatch, tmp_path):
-    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), restore_steps_per_segment=2)
     evaluator, policy, events, _data = _make_fake_evaluator(lambda _prompt, _time: False)
     monkeypatch.setattr(
         evaluator_module,
@@ -577,7 +743,7 @@ def test_demo_first_prompt_failure_does_not_sample(monkeypatch, tmp_path):
 
 
 def test_demo_sampling_error_saves_failure_video_once_then_reraises(monkeypatch, tmp_path):
-    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), restore_steps_per_segment=2)
     evaluator, policy, events, _data = _make_fake_evaluator(
         lambda prompt, current_time: prompt == config.prompts[0] and current_time >= 1.0
     )
@@ -599,11 +765,11 @@ def test_demo_sampling_error_saves_failure_video_once_then_reraises(monkeypatch,
 
     assert exc_info.value is error
     assert events["finishes"] == events["render_finishes"] == 1
-    assert events["videos"] == [(False, config.video_filename_prefix, 6)]
+    assert events["videos"] == [(False, config.video_filename_prefix, 1)]
 
 
 def test_demo_restore_error_saves_failure_video_once_then_reraises(monkeypatch, tmp_path):
-    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), restore_steps_per_segment=2)
     evaluator, policy, events, _data = _make_fake_evaluator(
         lambda prompt, current_time: prompt == config.prompts[0] and current_time >= 1.0
     )
@@ -623,7 +789,7 @@ def test_demo_restore_error_saves_failure_video_once_then_reraises(monkeypatch, 
     def fail_restore(**_kwargs):
         raise error
 
-    monkeypatch.setattr(evaluator_module, "restore_robot_state_direct", fail_restore)
+    monkeypatch.setattr(evaluator_module, "restore_robot_state_rrt", fail_restore)
 
     with pytest.raises(RuntimeError) as exc_info:
         evaluator.evaluate(
@@ -636,11 +802,11 @@ def test_demo_restore_error_saves_failure_video_once_then_reraises(monkeypatch, 
 
     assert exc_info.value is error
     assert events["finishes"] == events["render_finishes"] == 1
-    assert events["videos"] == [(False, config.video_filename_prefix, 6)]
+    assert events["videos"] == [(False, config.video_filename_prefix, 1)]
 
 
 def test_demo_settle_failure_uses_demo_video_name_once(tmp_path):
-    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), restore_steps_per_segment=2)
     evaluator, policy, events, data = _make_fake_evaluator(lambda _prompt, _time: False)
     data.warning.number[:] = 1
 
@@ -659,7 +825,7 @@ def test_demo_settle_failure_uses_demo_video_name_once(tmp_path):
 
 
 def test_demo_settle_failure_attempts_all_cleanup_when_finish_raises(tmp_path):
-    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), restore_steps_per_segment=2)
     evaluator, policy, events, data = _make_fake_evaluator(lambda _prompt, _time: False)
     data.warning.number[:] = 1
     finish_error = RuntimeError("finish exploded")
@@ -685,7 +851,7 @@ def test_demo_settle_failure_attempts_all_cleanup_when_finish_raises(tmp_path):
 
 
 def test_demo_policy_error_records_failed_attempt_and_preserves_error(capsys, tmp_path):
-    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), interpolation_steps=2)
+    config = replace(ProblemValidationDemoConfig(dataset_root=tmp_path), restore_steps_per_segment=2)
     evaluator, _policy, events, _data = _make_fake_evaluator(lambda _prompt, _time: False)
     policy_error = RuntimeError("policy exploded")
     cleanup_error = RuntimeError("finish exploded")
@@ -780,6 +946,7 @@ def _write_jsonl(path: Path, records: list[dict]):
 def test_demo_profile_overrides_conflicting_generic_evaluate_args():
     args = Namespace(
         problem_validation_demo=True,
+        problem_validation_prefix_percent=30.0,
         task="pickup",
         prompts="wrong,prompts",
         num_episodes=9,
@@ -807,6 +974,41 @@ def test_demo_profile_overrides_conflicting_generic_evaluate_args():
     assert args.use_transition_generation is False
     assert args.transition_mode == "none"
     assert not args.no_planning and not args.no_interpolation and not args.no_retrieval
+    assert config.prefix_fraction == pytest.approx(0.30)
+
+
+def test_demo_profile_accepts_configurable_prefix_percent():
+    args = Namespace(
+        problem_validation_demo=True,
+        problem_validation_prefix_percent=65.0,
+        task="pickup",
+        prompts=None,
+        num_episodes=2,
+        num_workers=0,
+        render_video=False,
+        intervention_mode="timeout",
+        experiment_mode="full",
+        use_transition_generation=True,
+        transition_mode="llm",
+        no_planning=True,
+        no_interpolation=True,
+        no_retrieval=True,
+    )
+
+    config = apply_problem_validation_demo_profile(args)
+
+    assert config.prefix_fraction == pytest.approx(0.65)
+
+
+@pytest.mark.parametrize("percent", [0.0, -1.0, 100.1])
+def test_demo_profile_rejects_invalid_prefix_percent(percent):
+    args = Namespace(
+        problem_validation_demo=True,
+        problem_validation_prefix_percent=percent,
+    )
+
+    with pytest.raises(ValueError, match=r"prefix percent must be in \(0, 100\]"):
+        apply_problem_validation_demo_profile(args)
 
 
 def test_parse_args_accepts_problem_validation_demo_flag(monkeypatch):
@@ -815,6 +1017,23 @@ def test_parse_args_accepts_problem_validation_demo_flag(monkeypatch):
     args = parse_args()
 
     assert args.problem_validation_demo is True
+
+
+def test_parse_args_accepts_problem_validation_prefix_percent(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate.py",
+            "--problem-validation-demo",
+            "--problem-validation-prefix-percent",
+            "42.5",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.problem_validation_prefix_percent == pytest.approx(42.5)
 
 
 def test_readme_documents_problem_validation_demo_contract():
@@ -826,6 +1045,7 @@ def test_readme_documents_problem_validation_demo_contract():
 
     for expected_text in (
         "--problem-validation-demo",
+        "--problem-validation-prefix-percent",
         "open the lid of the thermal cycler",
         "place pcrPlate into the thermal cycler",
         "mani_thermalcycler",
@@ -834,6 +1054,11 @@ def test_readme_documents_problem_validation_demo_contract():
         (
             "The frame is sampled uniformly from the first 30% of a trajectory matching "
             "`place pcrPlate into the thermal cycler`."
+        ),
+        (
+            "Set `--problem-validation-prefix-percent PERCENT` to change that sampling "
+            "window; for example, `50` samples uniformly from the first 50% of the selected "
+            "trajectory. Valid values are greater than 0 and at most 100."
         ),
     ):
         assert expected_text in readme
@@ -1005,16 +1230,13 @@ def test_sampler_rejects_invalid_frame_index(tmp_path, frame_indices):
         )
 
 
-def test_prompt_controller_latches_success_and_runs_five_more_seconds():
+def test_prompt_controller_stops_immediately_on_success():
     controller = PromptRunController(start_time=2.0, time_limit=30.0, post_success_seconds=5.0)
 
     assert controller.should_continue(10.0)
-    assert not controller.observe(10.0, success=True)
+    assert controller.observe(10.0, success=True)
     assert controller.success_time == 10.0
-    assert controller.should_continue(14.999)
-    assert not controller.observe(12.0, success=False)
-    assert controller.observe(15.0, success=False)
-    assert not controller.should_continue(15.0)
+    assert not controller.should_continue(10.0)
 
 
 def test_sequence_runs_tail_then_sample_restore_then_second_prompt(tmp_path):
