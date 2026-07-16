@@ -11,8 +11,16 @@ import zstandard as zstd
 import cv2
 import tyro
 
+# LeRobot renamed this cache variable. Normalize the legacy spelling before
+# importing LeRobot, whose recent versions reject LEROBOT_HOME outright.
+legacy_lerobot_home = os.environ.pop("LEROBOT_HOME", None)
+if legacy_lerobot_home and "HF_LEROBOT_HOME" not in os.environ:
+    os.environ["HF_LEROBOT_HOME"] = legacy_lerobot_home
+
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-LEROBOT_HOME = Path(os.getenv("LEROBOT_HOME", "~/.cache/huggingface/lerobot")).expanduser()
+LEROBOT_HOME = Path(
+    os.getenv("HF_LEROBOT_HOME", "~/.cache/huggingface/lerobot")
+).expanduser()
 
 def take_state_split(arr, split):
     start = split['start']
@@ -94,6 +102,14 @@ def main(data_dir: str, repo_id: str):
             "shape": (action_dim,),
             "names": ["actions"],
         },
+        "task_is_complete": {
+            "dtype": "float32",
+            # LeRobot 0.4 maps shape (1,) to an Arrow scalar while its frame
+            # validator still requires a NumPy array. A singleton 2-D feature
+            # avoids that incompatible code path and remains scalar-valued.
+            "shape": (1, 1),
+            "names": ["task_is_complete"],
+        },
     }
     for camera_key in camera_keys:
         features[camera_key] = {
@@ -126,6 +142,12 @@ def main(data_dir: str, repo_id: str):
 
         camera_mapping = task["camera_mapping"]
         camera_files = downsample["cameras"]
+        frame_infos = info.get("info", [])
+        if len(frame_infos) != len(states):
+            raise ValueError(
+                f"Frame info/state count mismatch in {log_dir}: "
+                f"{len(frame_infos)} != {len(states)}"
+            )
         def get_camera_file(camera_name):
             camera_file = camera_files[camera_name]
             camera_stream = cv2.VideoCapture(str(log_dir / camera_file))
@@ -138,10 +160,20 @@ def main(data_dir: str, repo_id: str):
             state_record = states[i]
             qpos = take_state_split(state_record, state_splits["qpos"])
             ctrl = take_state_split(state_record, state_splits["ctrl"])
+            if "task_is_complete" not in frame_infos[i]:
+                raise ValueError(
+                    f"Missing task_is_complete at state index {i} in {log_dir}. "
+                    "Re-collect the trajectory or run "
+                    "scripts/autobio_scripts/backfill_completion_labels.py on the raw logs."
+                )
 
             frame = {
                 "state": qpos[state_indices].astype(np.float32),
                 "actions": ctrl[action_indices].astype(np.float32),
+                "task_is_complete": np.asarray(
+                    [[bool(frame_infos[i]["task_is_complete"])]],
+                    dtype=np.float32,
+                ),
                 # "task": prompt,
             }
 

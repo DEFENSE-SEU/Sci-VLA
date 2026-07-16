@@ -1184,6 +1184,19 @@ _CONFIGS = [
         ema_decay=None,
         save_interval=10_000,
     ),
+    TrainConfig(
+        name="mani_real_pi05",
+        data=LeRoboAutoBioDataConfig(
+            repo_id="mani_real",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(asset_id="mani_real"),
+        ),
+        model=pi0_config.Pi0Config(pi05=True),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        wandb_enabled=False,
+        save_interval=10_000,
+    ),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

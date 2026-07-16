@@ -759,6 +759,10 @@ class Centrifuge5910Manipulate(Task):
         if self._eef_near(np.array([0.35, -0.05, 1.08]), tol=0.14):
             self._centrifuge5910_button_touched = True
 
+    def get_frame_log_info(self) -> dict:
+        """Record the existing physics predicate as a frame-level label."""
+        return {"task_is_complete": bool(self.check())}
+
     def step_and_log(self, info: dict):
         super().step_and_log(info)
         self._update_button_touch_state()

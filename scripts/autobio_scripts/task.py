@@ -56,6 +56,13 @@ class Task:
             self.spec, self.model, self.data, self.task_info,
             log_root=log_root, log_name=log_name,
         )
+        # MujocoSerializer records the initial state in its constructor. Enrich
+        # it too so annotations align with state and rendered-video indices.
+        self.serializer.infos[0].update(self.get_frame_log_info())
+
+    def get_frame_log_info(self) -> dict:
+        """Return annotations that should be stored with every recorded state."""
+        return {}
 
     def reset(self, seed: int | None = None):
         """Reset the task to its initial state."""
@@ -69,7 +76,9 @@ class Task:
     def step_and_log(self, info: dict):
         self.manager.step()
         if self.serializer:
-            self.serializer.record(info)
+            frame_info = dict(info)
+            frame_info.update(self.get_frame_log_info())
+            self.serializer.record(frame_info)
 
     def finish(self):
         if self.serializer:

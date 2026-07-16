@@ -84,6 +84,11 @@ python scripts/convert.py --data-dir logs/centrifuge5910_tasks --repo-id mani_ce
 python scripts/convert.py --data-dir logs/thermal_cycler_tasks --repo-id mani_thermalcycler
 ```
 
+The converted datasets now include a frame-level task_is_complete label.
+For the vision-language intervention-switch export, training, and annotated
+video inference workflow, see
+[scripts/intervention_switch/README.md](scripts/intervention_switch/README.md).
+
 ## Fine-tuning
 When you need to finetune a new specific task, add config in `third_party/openpi/src/openpi/training/config.py`.
 

@@ -1,0 +1,98 @@
+{
+  "paraphrases": {
+    "open the lid of the centrifuge5910": [
+      "open the centrifuge 5910 lid completely",
+      "the centrifuge 5910 lid is fully open"
+    ],
+    "pick the experimental centrifuge tube from rack and place it into the centrifuge5910": [
+      "put the experimental tube from the rack into the centrifuge 5910",
+      "the experimental tube is seated in the centrifuge 5910"
+    ],
+    "pick the balance centrifuge tube from rack and place it into the centrifuge5910": [
+      "put the balance tube from the rack into the centrifuge 5910",
+      "the balance tube is seated in the centrifuge 5910"
+    ],
+    "close the lid of the centrifuge5910": [
+      "fully close the centrifuge 5910 lid",
+      "the centrifuge 5910 lid is fully closed and locked"
+    ],
+    "press the screen button of the centrifuge5910": [
+      "press the centrifuge 5910 screen button",
+      "the centrifuge 5910 start button has been pressed"
+    ],
+    "pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack": [
+      "remove the experimental tube from the centrifuge 5910 and return it to the rack",
+      "the experimental tube is back on the rack"
+    ],
+    "pick the balance centrifuge tube from the centrifuge5910 and place it on the rack": [
+      "remove the balance tube from the centrifuge 5910 and return it to the rack",
+      "the balance tube is back on the rack"
+    ],
+    "open the lid of the thermal cycler": [
+      "open the thermal cycler lid completely",
+      "the thermal cycler lid is fully open"
+    ],
+    "place pcrPlate into the thermal cycler": [
+      "put the PCR plate into the thermal cycler",
+      "the PCR plate is seated inside the thermal cycler"
+    ],
+    "close the lid of the thermal cycler": [
+      "close the thermal cycler lid completely",
+      "the thermal cycler lid is fully closed"
+    ],
+    "screw tighten the knob of the thermal cycler": [
+      "tighten the thermal cycler knob",
+      "the thermal cycler knob is fully tightened"
+    ],
+    "press the button of the thermal cycler": [
+      "press the thermal cycler start button",
+      "the thermal cycler button has been pressed"
+    ],
+    "screw loosen the knob of the thermal cycler": [
+      "loosen the thermal cycler knob",
+      "the thermal cycler knob is fully loosened"
+    ],
+    "take pcrPlate from the thermal cycler": [
+      "remove the PCR plate from the thermal cycler",
+      "the PCR plate has been taken out of the thermal cycler"
+    ]
+  },
+  "contradictions": {
+    "open the lid of the centrifuge5910": [
+      "close the lid of the centrifuge5910"
+    ],
+    "close the lid of the centrifuge5910": [
+      "open the lid of the centrifuge5910"
+    ],
+    "pick the experimental centrifuge tube from rack and place it into the centrifuge5910": [
+      "pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack"
+    ],
+    "pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack": [
+      "pick the experimental centrifuge tube from rack and place it into the centrifuge5910"
+    ],
+    "pick the balance centrifuge tube from rack and place it into the centrifuge5910": [
+      "pick the balance centrifuge tube from the centrifuge5910 and place it on the rack"
+    ],
+    "pick the balance centrifuge tube from the centrifuge5910 and place it on the rack": [
+      "pick the balance centrifuge tube from rack and place it into the centrifuge5910"
+    ],
+    "open the lid of the thermal cycler": [
+      "close the lid of the thermal cycler"
+    ],
+    "close the lid of the thermal cycler": [
+      "open the lid of the thermal cycler"
+    ],
+    "place pcrPlate into the thermal cycler": [
+      "take pcrPlate from the thermal cycler"
+    ],
+    "take pcrPlate from the thermal cycler": [
+      "place pcrPlate into the thermal cycler"
+    ],
+    "screw tighten the knob of the thermal cycler": [
+      "screw loosen the knob of the thermal cycler"
+    ],
+    "screw loosen the knob of the thermal cycler": [
+      "screw tighten the knob of the thermal cycler"
+    ]
+  }
+}
