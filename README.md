@@ -24,6 +24,7 @@ Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simula
 - [Training Data Generation](#training-data-generation)
 - [Fine-tuning](#fine-tuning)
 - [Evaluation](#evaluation)
+- [Ready memory mode](#ready-memory-mode)
 
 ## Installation (editable local install)
 
@@ -52,18 +53,6 @@ sudo apt-get install -y libegl1 libgles2 libgl1 libglvnd0 libosmesa6 libosmesa6-
 
 ## Training Data Generation
 Generate raw expert demonstrations for each scene separately:
-
-```bash
-python scripts/autobio_scripts/centrifuge5910_tasks.py
-python scripts/autobio_scripts/thermal_cycler_tasks.py
-```
-
-By default, these commands write episode folders directly to:
-
-- `logs/centrifuge5910_tasks`
-- `logs/thermal_cycler_tasks`
-
-To change the number of episodes per sub-task or output directory:
 
 ```bash
 python scripts/autobio_scripts/centrifuge5910_tasks.py --episodes 100 --log-root logs/centrifuge5910_tasks
@@ -138,9 +127,63 @@ data root, repo id, schema, and stats settings from the launcher.
 ```bash
 python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
 ```
-<!-- python scripts/autobio_scripts/export_lerobot_ready_memory_index.py     --repo_id mani_thermalcycler     --output logs/ready_memory_index.json     --samples-per-task 1     --selection longest     --frame-stride 2 -->
 
-### Convert jax model to pytorch model
+### Ready memory mode
+
+Ready memory uses visual A/B comparisons over a demonstration trajectory to
+retrieve a state immediately before the next atomic operation. It is used for
+transitions between prompts, so run it with `--experiment-mode full` or
+`--experiment-mode no-agent`. The `no-agent` mode skips transition planning and
+directly restores the retrieved state.
+
+First, export a reusable ready-memory index from a local LeRobot dataset. The
+following command selects the longest demonstration for each atomic task and
+exports every second frame:
+
+```bash
+python scripts/autobio_scripts/export_lerobot_ready_memory_index.py \
+  --repo_id mani_thermalcycler \
+  --output logs/ready_memory_index.json \
+  --samples-per-task 1 \
+  --selection longest \
+  --frame-stride 2
+```
+
+Then configure a vision-language model and enable the index during evaluation:
+
+```bash
+export BASE_URL="https://openai.sufy.com/v1"
+export MODEL_NAME="qwen3.5-397b-a17b"
+export API_KEY=""
+
+python ./scripts/autobio_scripts/evaluate.py \
+  --task "thermal_cycler_long_task_1" \
+  --time_limit 30 \
+  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
+  --experiment-mode full \
+  --ready-memory-enabled \
+  --ready-memory-db logs/ready_memory_index.json \
+  --ready-memory-window-size 25 \
+  --ready-memory-max-iterations 4
+```
+
+To retrieve directly from a local LeRobot dataset without first exporting an
+index, replace `--ready-memory-db ...` with:
+
+```bash
+--ready-memory-repo-id mani_thermalcycler
+```
+
+You can optionally add `--ready-memory-episode-index INDEX` to restrict direct
+retrieval to one episode. Other useful controls are
+`--ready-memory-min-frame-ratio` (default `0.05`, avoids selecting frame 0),
+`--ready-memory-match-cutoff` (default `0.5`, fuzzy task matching for index
+mode), and `--ready-memory-front-image-key` (default `observation/image`, direct
+dataset mode). The selected state is written to
+`logs/target_ready_state_selected.json`, and the transition-compatible result
+is written to `logs/target_qpos_selected.json`.
+
+<!-- ### Convert jax model to pytorch model
 If you want to use pytorch model to evaluate tasks, converting the jax checkpoint to pytorch is needed:
 
 ```bash
@@ -196,7 +239,7 @@ find a path, the run prints
 to direct interpolation.
 The restore motion is included in the same replay video as both VLA prompts.
 Front- and left-view MP4s are saved under `videos/` with the fixed
-`problem_validation_open_lid_place_pcr_plate` filename prefix.
+`problem_validation_open_lid_place_pcr_plate` filename prefix. -->
 
 <!-- python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
 
@@ -221,15 +264,6 @@ python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1'
 | `no-agent` | Retrieve the target pose, skip planning/coding agents, and directly interpolate to the retrieved pose. |
 | `full` | Full Sci-VLA transition pipeline: retrieval, planning agent, coding/primitive execution, and final target-pose restoration. |
 
-For example:
-
-```bash
-python ./scripts/autobio_scripts/evaluate.py \
-  --task 'thermal_cycler_long_task_1' \
-  --time_limit 30 \
-  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler"  \
-  --experiment-mode baseline
-```
 
 ### Evaluate LABVLA on simulations
 
@@ -290,9 +324,6 @@ python ./scripts/autobio_scripts/evaluate.py \
   --llm-max-attempts 3 \
   --llm-timeout 120
 ```
-
-
-
 
 
 

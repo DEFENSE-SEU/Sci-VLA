@@ -83,6 +83,16 @@
           <site name="lid_open_button" pos="0 0 0.008" size="0.018" type="sphere" rgba="1 0.55 0.05 0.45" />
         </body>
       </body>
+      <!-- The screen is the inclined textured panel (normal 0 -0.868631 0.495459). -->
+      <body name="screen_start_button" pos="0.2 -0.33897815 0.19316678" quat="0.86471358 0.50226530 0 0">
+        <!-- Local +Z is the screen outward normal; pressing moves into the panel. -->
+        <joint name="screen_start_button_joint" type="slide" axis="0 0 -1" range="0 0.005" damping="5" stiffness="1200" />
+        <geom class="button" name="screen_start_button_geom" size="0.018 0.002" />
+        <geom name="screen_start_button_visual" type="cylinder" pos="0 0 -0.003" size="0.022 0.001"
+              rgba="0.12 0.55 0.95 1" contype="0" conaffinity="0" group="2" />
+        <site name="screen_start_button_touch" pos="0 0 0.003" size="0.019" type="sphere" rgba="0.12 0.55 0.95 0.35" />
+      </body>
+
       <body name="rotor-body" pos="0.07134309 0.0116669 0.20058534" quat="0.80993986 0 0 -0.58651293">
         <geom class="visual" mesh="rotor-body-visual-0" material="rotor-body-0" />
         <geom class="visual" mesh="rotor-body-visual-1" material="rotor-body-1" />
@@ -134,10 +144,12 @@
   <contact>
     <exclude body1="body" body2="lid_open_button" />
     <exclude body1="lid" body2="lid_open_button" />
+    <exclude body1="body" body2="screen_start_button" />
   </contact>
   <!-- 传感器，检测按钮按压 -->
   <sensor>
     <touch name="lid_open_button" site="lid_open_button" />
+    <touch name="screen_start_button_touch" site="screen_start_button_touch" />
   </sensor>
   <equality>
     <joint name="lid-lock" joint1="lid" polycoef="1.94" active="false" />

@@ -96,6 +96,8 @@ def test_centrifuge5910_check_uses_requested_atomic_success_conditions():
     assert "_lid_fully_open()" in open_branch
     assert "_lid_closed_and_locked()" in close_branch
     assert "_centrifuge5910_button_touched" in press_branch
+    assert "_screen_button_pressed" in source
+    assert "_gripper_touches_screen_button" in source
     assert "_tube_on_any_rack_slot(self.tube)" in take_experimental_branch
     assert "_tube_on_any_rack_slot(self.tube2)" in take_balance_branch
 
@@ -115,6 +117,8 @@ def test_thermal_cycler_check_uses_requested_atomic_success_conditions():
 
     assert "_lid_closed()" in close_branch
     assert "_thermal_cycler_button_touched" in press_branch
+    assert "_start_button_pressed_by_gripper" in source
+    assert "_gripper_touches_geom" in source
 
 
 def test_thermal_cycler_knob_success_checks_state_not_exact_target():
@@ -178,6 +182,27 @@ def test_press_button_start_condition_only_requires_button_not_pressed():
     assert "_plate_near" not in thermal_press_branch
     assert "_lid_closed()" not in thermal_press_branch
     assert "_knob_tightened()" not in thermal_press_branch
+
+
+def test_button_models_expose_a_physical_press_state():
+    centrifuge_model = Path(
+        "model/instrument/centrifuge_eppendorf_5910_ri.xml"
+    ).read_text(encoding="utf-8")
+    thermal_model = Path(
+        "model/instrument/thermal_cycler_biorad_c1000.xml"
+    ).read_text(encoding="utf-8")
+
+    assert 'body name="screen_start_button"' in centrifuge_model
+    assert 'quat="0.86471358 0.50226530 0 0"' in centrifuge_model
+    assert "button_rotation = self.data.xmat[button_body_id].reshape(3, 3)" in (
+        CENTRIFUGE_SOURCE.read_text(encoding="utf-8")
+    )
+    assert 'joint name="screen_start_button_joint" type="slide"' in centrifuge_model
+    assert 'geom class="button" name="screen_start_button_geom"' in centrifuge_model
+    assert 'body name="lid_open_button"' in centrifuge_model
+
+    assert 'joint name="start-button-joint" type="slide"' in thermal_model
+    assert 'geom name="start-button-cap" class="button"' in thermal_model
 
 
 def test_atomic_tasks_have_task_specific_arm_perturb_ranges():

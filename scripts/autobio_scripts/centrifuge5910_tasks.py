@@ -20,6 +20,9 @@ EXPERIMENTAL_TUBE_SLOT_ID = 0
 BALANCE_TUBE_SLOT_ID = 1
 EXPERIMENTAL_TUBE_RACK_POSITION = (1, 4)
 BALANCE_TUBE_RACK_POSITION = (0, 2)
+TUBE_SLOT_XY_TOL = 0.015
+TUBE_SLOT_Z_TOL = 0.015
+CENTRIFUGE5910_SCREEN_BUTTON_PRESS_QPOS = 0.0025
 
 CENTRIFUGE5910_PROMPT_TASKS = {
     "open the lid of the centrifuge5910": "open_centrifuge5910_lid",
@@ -724,7 +727,14 @@ class Centrifuge5910Manipulate(Task):
     def _slot_position(self, slot_id: int) -> np.ndarray:
         return np.asarray(self.instrument.get_tube_pose(self.data, slot_id, "distal").pos, dtype=np.float64)
 
-    def _tube_in_slot(self, tube: CentrifugeTube, slot_id: int, xy_tol: float = 0.10, z_tol: float = 0.14) -> bool:
+    def _tube_in_slot(
+        self,
+        tube: CentrifugeTube,
+        slot_id: int,
+        xy_tol: float = TUBE_SLOT_XY_TOL,
+        z_tol: float = TUBE_SLOT_Z_TOL,
+    ) -> bool:
+        """Return whether a tube is seated at the slot's insertion pose."""
         tube_pos = self._tube_position(tube)
         slot_pos = self._slot_position(slot_id)
         return (
@@ -751,12 +761,32 @@ class Centrifuge5910Manipulate(Task):
                     return True
         return False
 
-    def _eef_near(self, target_pos: np.ndarray, tol: float = 0.12) -> bool:
-        gripper_pose = self.arm.get_site_pose(self.data)
-        return np.linalg.norm(gripper_pose.pos - np.asarray(target_pos, dtype=np.float64)) <= tol
+    def _gripper_touches_screen_button(self) -> bool:
+        """Require contact from the Robotiq gripper, not just an EEF waypoint."""
+        button_geom_id = self.model.geom(
+            "/centrifuge_eppendorf_5910:screen_start_button_geom"
+        ).id
+        for contact_index in range(self.data.ncon):
+            contact = self.data.contact[contact_index]
+            if button_geom_id not in (contact.geom1, contact.geom2):
+                continue
+            other_geom_id = contact.geom2 if contact.geom1 == button_geom_id else contact.geom1
+            other_body_id = self.model.geom_bodyid[other_geom_id]
+            if self.model.body(other_body_id).name.startswith("/ur:2f85:"):
+                return True
+        return False
+
+    def _screen_button_pressed(self) -> bool:
+        button_qposadr = self.model.joint(
+            "/centrifuge_eppendorf_5910:screen_start_button_joint"
+        ).qposadr.item()
+        return (
+            self._gripper_touches_screen_button()
+            and float(self.data.qpos[button_qposadr]) >= CENTRIFUGE5910_SCREEN_BUTTON_PRESS_QPOS
+        )
 
     def _update_button_touch_state(self):
-        if self._eef_near(np.array([0.35, -0.05, 1.08]), tol=0.14):
+        if self._screen_button_pressed():
             self._centrifuge5910_button_touched = True
 
     def get_frame_log_info(self) -> dict:
@@ -979,7 +1009,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 lock_quat = np.array([0.0, 0.7071, 0.7071, 0.0])
                 lock_pose_pre = self.instrument.get_eef_pose(self.data, loc='lid', mode='lock_pre')
                 lock_pose_pre.quat = lock_quat
-                self.gripper_control(255)
+                self.gripper_control(240)
                 self.move_to(lock_pose_pre, num_steps=5)
 
                 lock_pose = self.instrument.get_eef_pose(self.data, loc='lid', mode='lock')
@@ -1018,7 +1048,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 path_to_grip = self.interpolate(eef_pre_pose, target_pose, 5)
                 self.path_follow(path_to_grip)
 
-                self.gripper_control(255)
+                self.gripper_control(240)
                 
                 cur_pose = self.arm.get_site_pose(self.data)
                 lift_pose = Pose(
@@ -1077,7 +1107,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 path_to_grip = self.interpolate(eef_pre_pose, target_pose, 5)
                 self.path_follow(path_to_grip)
 
-                self.gripper_control(255)
+                self.gripper_control(240)
                 
                 cur_pose = self.arm.get_site_pose(self.data)
                 lift_pose = Pose(
@@ -1126,7 +1156,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 )
                 self.move_to(lift_pose, 14)
 
-                self.gripper_control(255)
+                self.gripper_control(240)
 
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
@@ -1172,7 +1202,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 )
                 self.move_to(lift_pose, 14)
 
-                self.gripper_control(255)
+                self.gripper_control(240)
 
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
@@ -1196,7 +1226,7 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 self.path_follow(path)
                 self.gripper_control(0)
             case 'press_centrifuge5910_button':
-                self.gripper_control(255)  
+                self.gripper_control(240)  
                 
                 cur_pose = self.arm.get_site_pose(self.data)
                 end_pose = Pose(pos=cur_pose.pos + (0.0, 0.0, 0.1), quat=cur_pose.quat)
@@ -1218,8 +1248,24 @@ class Centrifuge5910ManipulateExpert(Centrifuge5910Manipulate, Expert):
                 path = self.interpolate(cur_pose, end_pose, 20)
                 self.path_follow(path)
 
-                end_pose = Pose(pos=np.array([0.35, -0.05, 1.08]), quat=cur_pose.quat)
-                path = self.interpolate(cur_pose, end_pose, 20)
+                button_body_id = self.model.body(
+                    "/centrifuge_eppendorf_5910:screen_start_button"
+                ).id
+                button_pos = self.data.xpos[button_body_id]
+                button_rotation = self.data.xmat[button_body_id].reshape(3, 3)
+                button_normal = button_rotation @ np.array([0.0, 0.0, 1.0])
+                # Approach and press along the inclined screen normal.  The final
+                # end-effector target is the physical centre of the button.
+                approach_pose = Pose(
+                    pos=button_pos + 0.08 * button_normal,
+                    quat=cur_pose.quat,
+                )
+                path = self.interpolate(cur_pose, approach_pose, 20)
+                self.path_follow(path)
+
+                cur_pose = self.arm.get_site_pose(self.data)
+                end_pose = Pose(pos=button_pos, quat=cur_pose.quat)
+                path = self.interpolate(cur_pose, end_pose, 12)
                 self.path_follow(path)
         self.finish()
 
@@ -1290,7 +1336,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate centrifuge5910 expert demonstrations as a scene-level raw dataset."
     )
-    parser.add_argument("--episodes", type=int, default=100, help="Episodes per task.")
+    parser.add_argument("--episodes", type=int, default=1, help="Episodes per task.")
     parser.add_argument(
         "--log-root",
         type=Path,

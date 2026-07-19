@@ -793,7 +793,7 @@ def _compact_number(value: float) -> int | float:
     return int(value) if value.is_integer() else value
 
 
-def _normalize_transition_command(command: dict) -> dict | None:
+def _normalize_transition_command(command: dict, *, enforce_plan_constraints: bool = True) -> dict | None:
     if not isinstance(command, dict):
         raise ValueError(f"Transition command must be an object, got {type(command).__name__}")
     op = str(command.get("op", command.get("action", ""))).strip().lower()
@@ -839,7 +839,9 @@ def _normalize_transition_command(command: dict) -> dict | None:
         else:
             raise ValueError("translate command requires distance_m")
         distance_m *= sign
-        if not np.isfinite(distance_m) or abs(distance_m) > 0.25:
+        if not np.isfinite(distance_m):
+            raise ValueError(f"Invalid translate distance_m: {distance_m}")
+        if enforce_plan_constraints and abs(distance_m) > 0.25:
             raise ValueError(f"Invalid translate distance_m: {distance_m}")
         normalized = {"op": "translate", "axis": axis, "distance_m": _compact_number(distance_m)}
         steps = _motion_steps_or_none(command.get("steps"))
@@ -856,7 +858,9 @@ def _normalize_transition_command(command: dict) -> dict | None:
         else:
             raise ValueError("rotate command requires angle_deg")
         angle_deg *= sign
-        if not np.isfinite(angle_deg) or abs(angle_deg) > 180.0:
+        if not np.isfinite(angle_deg):
+            raise ValueError(f"Invalid rotate angle_deg: {angle_deg}")
+        if enforce_plan_constraints and abs(angle_deg) > 180.0:
             raise ValueError(f"Invalid rotate angle_deg: {angle_deg}")
         normalized = {"op": "rotate", "axis": axis, "angle_deg": _compact_number(angle_deg)}
         steps = _motion_steps_or_none(command.get("steps"))
@@ -873,12 +877,15 @@ def _normalize_transition_command(command: dict) -> dict | None:
     raise ValueError(f"Unsupported transition command op: {op!r}")
 
 
-def _normalize_transition_commands(commands: list) -> list[dict]:
+def _normalize_transition_commands(commands: list, *, enforce_plan_constraints: bool = True) -> list[dict]:
     if not isinstance(commands, list):
         raise ValueError("Transition commands must be a list")
     normalized = []
     for command in commands:
-        normalized_command = _normalize_transition_command(command)
+        normalized_command = _normalize_transition_command(
+            command,
+            enforce_plan_constraints=enforce_plan_constraints,
+        )
         if normalized_command is not None:
             normalized.append(normalized_command)
     if not normalized:
@@ -886,7 +893,7 @@ def _normalize_transition_commands(commands: list) -> list[dict]:
     return normalized
 
 
-def _commands_from_plan_steps(plan_steps: list[str]) -> list[dict]:
+def _commands_from_plan_steps(plan_steps: list[str], *, enforce_plan_constraints: bool = True) -> list[dict]:
     commands = []
     for raw_step in plan_steps:
         step = str(raw_step).strip().lower()
@@ -931,21 +938,27 @@ def _commands_from_plan_steps(plan_steps: list[str]) -> list[dict]:
                     "angle_deg": float(rotate_match.group("value")) * sign,
                 }
             )
-    return _normalize_transition_commands(commands)
+    return _normalize_transition_commands(commands, enforce_plan_constraints=enforce_plan_constraints)
 
 
-def _commands_from_plan_obj(plan_obj: dict) -> list[dict]:
+def _commands_from_plan_obj(plan_obj: dict, *, enforce_plan_constraints: bool = True) -> list[dict]:
     commands = plan_obj.get("commands")
     if commands is not None:
-        return _normalize_transition_commands(commands)
+        return _normalize_transition_commands(commands, enforce_plan_constraints=enforce_plan_constraints)
     plan_steps = plan_obj.get("plan_steps", [])
     if not isinstance(plan_steps, list) or len(plan_steps) == 0:
         raise ValueError("Stage-1 planning output missing non-empty commands")
-    return _commands_from_plan_steps(plan_steps)
+    return _commands_from_plan_steps(
+        plan_steps,
+        enforce_plan_constraints=enforce_plan_constraints,
+    )
 
 
-def _commands_to_execute_body(commands: list[dict]) -> str:
-    normalized = _normalize_transition_commands(commands)
+def _commands_to_execute_body(commands: list[dict], *, enforce_plan_constraints: bool = True) -> str:
+    normalized = _normalize_transition_commands(
+        commands,
+        enforce_plan_constraints=enforce_plan_constraints,
+    )
     commands_literal = json.dumps(normalized, ensure_ascii=False)
     return f"self.execute_transition_commands({commands_literal})"
 
@@ -1261,7 +1274,7 @@ Verification rules:
 1. Check command schema only: commands must be a list of allowed ops with required fields.
 2. Allowed command ops are: open_gripper, close_gripper, set_gripper, translate, rotate, wait, restore_target_state.
 3. Verify plan_steps match the executable commands in order.
-4. Verify translate commands use x/y/z and abs(distance_m) <= 0.25.
+4. Verify translate commands use x/y/z and abs(distance_m) <= 0.3.
 5. Verify rotate commands use x/y/z and abs(angle_deg) <= 180.
 6. Verify translate/rotate steps, when present, are positive integers >= {MIN_TRANSITION_MOTION_STEPS}; delay and wait steps must be positive integers.
 7. Verify set_gripper values, when present, are numeric and in range 0..255.
@@ -1443,7 +1456,10 @@ def _generate_verified_transition_plan(
         )
 
         try:
-            transition_commands = _commands_from_plan_obj(plan_obj)
+            transition_commands = _commands_from_plan_obj(
+                plan_obj,
+                enforce_plan_constraints=verifier_enabled,
+            )
             plan_obj["commands"] = transition_commands
         except Exception as e:
             transition_commands = []
@@ -1462,7 +1478,7 @@ def _generate_verified_transition_plan(
                 if write_logs:
                     _write_json(f"logs/transition_plan_attempt_{revision_index + 1}.json", plan_obj)
                     _write_json(f"logs/transition_plan_verification_{revision_index + 1}.json", verification)
-                print("Stage 1.5: plan verifier disabled; accepted locally valid plan.")
+                print("Stage 1.5: plan verifier disabled; accepted executable plan without verifier constraint checks.")
                 return plan_obj, transition_commands, verification
 
             try:
@@ -2944,7 +2960,10 @@ Rules:
     _write_json("logs/transition_plan_verification.json", plan_verification)
 
     print("🚀 Stage 2: Compiling planner commands into transition primitive calls...")
-    execute_body = _commands_to_execute_body(transition_commands)
+    execute_body = _commands_to_execute_body(
+        transition_commands,
+        enforce_plan_constraints=verifier_enabled,
+    )
     code = _replace_execute_body(
         template_code,
         execute_body,

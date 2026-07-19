@@ -58,6 +58,52 @@ def test_verified_planning_skips_llm_verifier_by_default():
     assert plan_obj["commands"] == commands
 
 
+
+def test_disabled_verifier_accepts_over_limit_translate_without_plan_constraint_check():
+    transition_generation = _import_transition_generation_with_stubs()
+    _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan
+
+    requested_stages = []
+
+    def fake_request_json(**kwargs):
+        stage_name = kwargs["stage_name"]
+        requested_stages.append(stage_name)
+        if stage_name == "stage-1-planning":
+            return {
+                "commands": [{"op": "translate", "axis": "z", "distance_m": 0.2711}],
+                "plan_steps": ["translate upward"],
+                "safety_notes": ["verifier disabled regression"],
+                "final_target_qpos": [0, 0, 0, 0, 0, 0],
+                "final_target_gripper": 0,
+            }
+        if stage_name == "stage-1.5-plan-verifier":
+            raise AssertionError("verifier should be disabled")
+        raise AssertionError(f"unexpected stage: {stage_name}")
+
+    plan_obj, commands, verification = _generate_verified_transition_plan(
+        client=object(),
+        model_name="dummy-model",
+        planning_prompt="planner prompt",
+        task_prompt="target task",
+        front_image_data_url="front",
+        side_image_data_url="side",
+        target_front_image_data_url=None,
+        verifier_enabled=False,
+        request_json_object=fake_request_json,
+    )
+
+    assert requested_stages == ["stage-1-planning"]
+    assert verification["passed"] is True
+    assert verification["verifier_enabled"] is False
+    assert commands == [{"op": "translate", "axis": "z", "distance_m": 0.2711}]
+    assert plan_obj["commands"] == commands
+    execute_body = transition_generation._commands_to_execute_body(
+        commands,
+        enforce_plan_constraints=False,
+    )
+    assert "0.2711" in execute_body
+
+
 def test_verified_planning_retries_with_bad_action_feedback():
     transition_generation = _import_transition_generation_with_stubs()
     _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan

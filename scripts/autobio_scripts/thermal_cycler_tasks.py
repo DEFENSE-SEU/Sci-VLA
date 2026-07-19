@@ -18,6 +18,9 @@ PCR_PLATE_TARGET_APPROACH_LOW_OFFSET = np.array([0.0, 0.01, 0.12])
 PCR_PLATE_PLACE_RETREAT_OFFSET = np.array([0.0, -0.1, 0.1])
 PCR_PLATE_PICK_CLEARANCE_OFFSET = np.array([0.0, -0.1, 0.25])
 PCR_PLATE_GRIP_SETTLE_OFFSET = np.array([-0.01, 0.0, 0.0])
+PCR_PLATE_SEATED_XY_TOL = 0.020
+PCR_PLATE_SEATED_Z_TOL = 0.018
+THERMAL_CYCLER_BUTTON_PRESS_QPOS = 0.0025
 
 THERMAL_CYCLER_PROMPT_TASKS = {
     "open the lid of the thermal cycler": "open_thermal_cycler_lid",
@@ -116,7 +119,7 @@ class UR5eArm:
 class ThermalCycler(ThermalCyclerBioradC1000):
     def _reset(self, data):
         super()._reset(data)
-        self.fk_lever = FK(2, self.model, data, f'{self.local_prefix}body', f'{self.local_prefix}lid-lever')
+        self.fk_lever = FK(2, self.model, data, f'{self.local_prefix}lid', f'{self.local_prefix}lid-lever')
 
     def fk(self, qpos: np.ndarray) -> Pose:
         return self.fk_lever.forward(qpos)
@@ -479,7 +482,12 @@ class ThermalCyclerManipulate(Task):
         pcr_plate_jnt_adr = self.model.joint('pcr_plate_free').qposadr.item()
         return np.asarray(self.data.qpos[pcr_plate_jnt_adr:pcr_plate_jnt_adr + 3], dtype=np.float64)
 
-    def _plate_near(self, target_pos: np.ndarray, xy_tol: float = 0.06, z_tol: float = 0.12) -> bool:
+    def _plate_near(
+        self,
+        target_pos: np.ndarray,
+        xy_tol: float = PCR_PLATE_SEATED_XY_TOL,
+        z_tol: float = PCR_PLATE_SEATED_Z_TOL,
+    ) -> bool:
         plate_pos = self._pcr_plate_position()
         target_pos = np.asarray(target_pos, dtype=np.float64)
         return (
@@ -509,14 +517,30 @@ class ThermalCyclerManipulate(Task):
             and abs(float(cur_qpos[1] - self.instrument.lever_jntlimit[1])) < 0.03
         )
 
-    def _eef_near_start_button(self, tol: float = 0.07) -> bool:
-        gripper_pose = self.arm.get_site_pose(self.data)
-        button_body_id = self.model.body("/thermal_cycler_biorad_c1000:start-button").id
-        button_pos = np.asarray(self.data.xpos[button_body_id], dtype=np.float64)
-        return np.linalg.norm(gripper_pose.pos - button_pos) <= tol
+    def _gripper_touches_geom(self, geom_name: str) -> bool:
+        """Return whether a Robotiq gripper geom is in a MuJoCo contact pair."""
+        target_geom_id = self.model.geom(geom_name).id
+        for contact_index in range(self.data.ncon):
+            contact = self.data.contact[contact_index]
+            if target_geom_id not in (contact.geom1, contact.geom2):
+                continue
+            other_geom_id = contact.geom2 if contact.geom1 == target_geom_id else contact.geom1
+            other_body_id = self.model.geom_bodyid[other_geom_id]
+            if self.model.body(other_body_id).name.startswith("/ur:2f85:"):
+                return True
+        return False
+
+    def _start_button_pressed_by_gripper(self) -> bool:
+        button_qposadr = self.model.joint(
+            "/thermal_cycler_biorad_c1000:start-button-joint"
+        ).qposadr.item()
+        return (
+            self._gripper_touches_geom("/thermal_cycler_biorad_c1000:start-button-cap")
+            and float(self.data.qpos[button_qposadr]) >= THERMAL_CYCLER_BUTTON_PRESS_QPOS
+        )
 
     def _update_button_touch_state(self):
-        if self._eef_near_start_button():
+        if self._start_button_pressed_by_gripper():
             self._thermal_cycler_button_touched = True
 
     def get_frame_log_info(self) -> dict:
@@ -662,11 +686,9 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             self.move_to(target_pose, num_steps=2)
             self.gripper_control(240)
 
-            # close the lid
             path = self.instrument.lever_path(self.data, mode='1/close')
             self.path_follow(path[:-1])
             self.gripper_control(0)
-            self.move_to(path[-1], num_steps=5)
         elif self.task == 'open_thermal_cycler_lid':
             self.move_to(self.instrument.get_eef_pose(self.data, loc='lever', mode='2/detach'))
             self.gripper_control(170)
@@ -681,8 +703,7 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             self.gripper_control(240)
             path = self.instrument.lever_path(self.data, mode='1/open')
             self.path_follow(path)
-            self.gripper_control(170)
-            self.move_to(self.instrument.get_eef_pose(self.data, loc='lever', mode='1/detach'))
+            self.gripper_control(0)
         elif self.task == 'place_pcrPlate_into_thermalCycler':
             self.gripper_control(0)
             body_id = self.model.body("pcr_plate_96well").id
@@ -722,10 +743,6 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             path = self.interpolate(cur_pose, terminal_pose, 5)
             self.path_follow(path)
             self.gripper_control(0)
-            cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(cur_pose.pos+np.array([0.0, 0.0, 0.1]), cur_pose.quat)
-            path = self.interpolate(cur_pose, terminal_pose, 5)
-            self.path_follow(path)
 
         elif self.task == 'take_pcrPlate_from_thermalCycler':
             grip_pose = self.instrument.get_plate_grip_pose_by_site(self.data, 'right')
@@ -755,10 +772,6 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
             self.gripper_control(0)
-            cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(cur_pose.pos+np.array([0.0, 0.0, 0.1]), cur_pose.quat)
-            path = self.interpolate(cur_pose, terminal_pose, 20)
-            self.path_follow(path)
         elif self.task == 'screw_tighten_knob':
             # screw the knob
             self.move_to(self.instrument.get_eef_pose(self.data, loc='knob', mode='detach'), 5)
@@ -767,7 +780,6 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
             path = self.instrument.knob_path(self.data, mode='tighten')
             self.move_to(path[1], 5)
             self.gripper_control(100)
-            self.move_to(self.instrument.get_eef_pose(self.data, loc='knob', mode='detach'), 5)
         elif self.task == 'screw_loosen_knob':
             # screw the knob
             self.move_to(self.instrument.get_eef_pose(self.data, loc='knob', mode='detach'), 5)
@@ -779,13 +791,15 @@ class ThermalCyclerManipulateExpert(ThermalCyclerManipulate, Expert):
         elif self.task == 'press_thermal_cycler_button':
             self.gripper_control(400)
             body_id = self.model.body("/thermal_cycler_biorad_c1000:start-button").id
-            button_pos = self.data.xpos[body_id]
+            button_pos = np.asarray(self.data.xpos[body_id], dtype=np.float64).copy()
+            button_rotation = self.data.xmat[body_id].reshape(3, 3)
+            button_normal = button_rotation @ np.array([0.0, 0.0, 1.0])
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(button_pos+np.array([0, 0.0, 0.1]), cur_pose.quat)
+            terminal_pose = Pose(button_pos + 0.08 * button_normal, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
             cur_pose = self.arm.get_site_pose(self.data)
-            terminal_pose = Pose(button_pos+np.array([0, 0.0, 0.01]), cur_pose.quat)
+            terminal_pose = Pose(button_pos, cur_pose.quat)
             path = self.interpolate(cur_pose, terminal_pose, 20)
             self.path_follow(path)
         self.finish()
@@ -857,7 +871,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate thermal cycler expert demonstrations as a scene-level raw dataset."
     )
-    parser.add_argument("--episodes", type=int, default=100, help="Episodes per task.")
+    parser.add_argument("--episodes", type=int, default=1, help="Episodes per task.")
     parser.add_argument(
         "--log-root",
         type=Path,

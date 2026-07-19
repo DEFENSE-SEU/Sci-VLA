@@ -14,7 +14,7 @@
       <geom type="mesh" contype="0" conaffinity="1" density="0" group="3" />
     </default>
     <default class="button">
-      <geom type="capsule" size="0.005 0.002" rgba="0.2 0.8 0.2 1" contype="0" conaffinity="0" group="2" />
+      <geom type="cylinder" size="0.009 0.002" rgba="0.2 0.8 0.2 1" contype="1" conaffinity="1" group="3" />
     </default>
   </default>
   <option gravity="0 0 0" />
@@ -47,9 +47,9 @@
     <mesh class="visual" name="reaction-block-visual-0" file="instrument/thermal_cycler_biorad_c1000/reaction-block-visual-0.obj" />
     <material name="reaction-block-0" rgba="0.498039 0.498039 0.498039 1" metallic="0.0" roughness="1.0" />
     <mesh class="inertia" name="reaction-block-inertia" file="instrument/thermal_cycler_biorad_c1000/reaction-block-inertia.obj" />
-    
+
     <!-- 新增启动按钮材质 -->
-    <material name="start-button" rgba="0.2 0.8 0.2 1" metallic="0.0" roughness="0.3" />
+    <material name="start-button" rgba="0.8 0.05 0.05 1" metallic="0.0" roughness="0.3" />
     <material name="start-button-active" rgba="0.8 0.2 0.2 1" metallic="0.0" roughness="0.3" />
   </asset>
   <extension>
@@ -72,17 +72,16 @@
       <geom class="collision" type="box" size="0.16531634 0.064804 0.00545543" pos="0 0.09293923 0.09345097" />
       <geom class="collision" type="box" size="0.11763413 0.03564314 0.01211631" pos="0 -0.11857569 0.10963205" />
       <geom class="collision" type="box" size="0.07844975 0.00706048 0.00431473" pos="0 0.04603181 0.1023905" />
-      
-      <!-- 新增启动按钮（位于屏幕下方右侧） -->
-      <body name="start-button" pos="-0.1 0.23 0.045" quat="1 0 0 0">
-        <!--<joint name="start-button-joint" type="slide" axis="0 0 -1" range="0 0.005" damping="0.1" /> -->
-        <geom name="start-button-cap" class="button" type="capsule" size="0.008 0.002" pos="0 0 -0.001" 
-              material="start-button" />
-        <geom name="start-button-base" type="cylinder" size="0.007 0.001" pos="0 0 0.001" 
+
+      <!-- 新增启动按钮（沿倾斜屏幕法向外凸，背面贴近屏幕面） -->
+      <body name="start-button" pos="-0.1 0.23240726 0.04389379" quat="0.94832365 -0.31730467 0 0">
+        <joint name="start-button-joint" type="slide" axis="0 0 -1" range="0 0.005" damping="5" stiffness="1200" />
+        <geom name="start-button-cap" class="button" pos="0 0 0" material="start-button" />
+        <geom name="start-button-base" type="cylinder" size="0.011 0.002" pos="0 0 -0.003"
               rgba="0.3 0.3 0.3 1" group="2" contype="0" conaffinity="0" />
-        <site name="start-button-touch" type="sphere" size="0.009" pos="0 0 0" rgba="1 0 0 0.3" />
+        <site name="start-button-touch" type="sphere" size="0.010" pos="0 0 0.003" rgba="1 0 0 0.3" />
       </body>
-      
+
       <body name="lid" pos="-0 -0.11407998 0.14201831" quat="0 -0 -0.15695801 0.98760528">
         <!-- 原有lid内容保持不变 -->
         <joint name="lid" type="hinge" pos="-0.07835153 0.00491715 -0.02499539" axis="-1 -0 0" range="-1.9 0" />
@@ -125,6 +124,9 @@
       </body>
     </body>
   </worldbody>
+  <sensor>
+    <touch name="start-button-touch" site="start-button-touch" />
+  </sensor>
   <equality>
     <joint name="lid-lock" joint1="lid" polycoef="-1.9" active="false" />
   </equality>

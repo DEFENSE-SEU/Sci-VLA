@@ -66,6 +66,55 @@ def test_rrt_planner_skips_action_when_no_path_is_valid():
     assert plan.validation["reason"] == "rrt_failed_skip_action"
 
 
+def test_rrt_connect_finds_path_around_a_blocked_direct_route():
+    from non_llm_transition import plan_joint_path_rrt
+
+    start = np.array([-1.0, 0.0])
+    target = np.array([1.0, 0.0])
+
+    def validator(path):
+        for first, second in zip(path[:-1], path[1:]):
+            for alpha in np.linspace(0.0, 1.0, 101):
+                point = first + alpha * (second - first)
+                if abs(point[0]) < 0.2 and abs(point[1]) < 0.2:
+                    return {"valid": False, "reason": "central_obstacle"}
+        return {"valid": True, "reason": "clear"}
+
+    plan = plan_joint_path_rrt(
+        start,
+        target,
+        path_validator=validator,
+        joint_ranges=np.array([[-1.5, 1.5], [-1.5, 1.5]]),
+        rng=np.random.default_rng(7),
+        max_iterations=256,
+        step_size=0.2,
+        goal_sample_rate=0.2,
+        local_sample_rate=0.6,
+    )
+
+    assert plan.status == "rrt"
+    np.testing.assert_allclose(plan.waypoints[0], start)
+    np.testing.assert_allclose(plan.waypoints[-1], target)
+    assert len(plan.waypoints) > 2
+    assert validator(plan.waypoints)["valid"] is True
+
+
+def test_rrt_uses_nearest_equivalent_periodic_target_coordinate():
+    from non_llm_transition import plan_joint_path_rrt
+
+    start = np.array([3.10])
+    target = np.array([-3.10])
+
+    plan = plan_joint_path_rrt(
+        start,
+        target,
+        path_validator=lambda _path: {"valid": True},
+        joint_ranges=np.array([[-2.0 * np.pi, 2.0 * np.pi]]),
+    )
+
+    assert plan.status == "rrt_direct"
+    assert abs(plan.waypoints[-1][0] - start[0]) < 0.2
+
 def test_joint_ranges_from_model_maps_qpos_span_to_scalar_joint_limits():
     from non_llm_transition import joint_ranges_from_model
 

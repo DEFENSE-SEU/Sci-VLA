@@ -18,6 +18,7 @@ if legacy_lerobot_home and "HF_LEROBOT_HOME" not in os.environ:
     os.environ["HF_LEROBOT_HOME"] = legacy_lerobot_home
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+import lerobot.datasets.lerobot_dataset as lerobot_dataset_module
 LEROBOT_HOME = Path(
     os.getenv("HF_LEROBOT_HOME", "~/.cache/huggingface/lerobot")
 ).expanduser()
@@ -69,7 +70,74 @@ def probe_log(log_dir: Path):
     camera_mapping = task["camera_mapping"]
     return fps, height, width, state_dim, action_dim, list(camera_mapping.keys())
 
-def main(data_dir: str, repo_id: str):
+def configure_lerobot_video_encoder(video_codec: str, video_crf: int, video_gop: int | None):
+    valid_codecs = {"h264", "hevc", "libsvtav1"}
+    if video_codec not in valid_codecs:
+        raise ValueError(f"Unsupported video codec {video_codec!r}; expected one of {sorted(valid_codecs)}")
+
+    original_encode_video_frames = lerobot_dataset_module.encode_video_frames
+
+    def encode_video_frames_compat(imgs_dir, video_path, fps, **kwargs):
+        kwargs["vcodec"] = video_codec
+        kwargs["pix_fmt"] = "yuv420p"
+        kwargs["crf"] = video_crf
+        kwargs["g"] = video_gop
+        return original_encode_video_frames(imgs_dir, video_path, fps, **kwargs)
+
+    lerobot_dataset_module.encode_video_frames = encode_video_frames_compat
+
+
+def validate_video_file(video_path: Path, *, min_mean: float = 1.0, min_std: float = 1.0):
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Failed to open converted video: {video_path}")
+
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    if frame_count <= 0:
+        capture.release()
+        raise RuntimeError(f"Converted video has no frames: {video_path}")
+
+    sample_indices = sorted({0, frame_count // 2, frame_count - 1})
+    means = []
+    stds = []
+    for frame_index in sample_indices:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if not ok:
+            capture.release()
+            raise RuntimeError(f"Failed to decode frame {frame_index} from converted video: {video_path}")
+        means.append(float(frame.mean()))
+        stds.append(float(frame.std()))
+    capture.release()
+
+    if max(means) <= min_mean and max(stds) <= min_std:
+        raise RuntimeError(
+            f"Converted video looks black: {video_path} "
+            f"means={means} stds={stds}"
+        )
+
+
+def validate_episode_videos(dataset: LeRobotDataset, episode_index: int, log_dir: Path):
+    for video_key in dataset.meta.video_keys:
+        video_path = dataset.root / dataset.meta.get_video_file_path(episode_index, video_key)
+        try:
+            validate_video_file(video_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Video validation failed for episode={episode_index} key={video_key!r} "
+                f"source_log={log_dir}"
+            ) from exc
+
+
+def main(
+    data_dir: str,
+    repo_id: str,
+    video_codec: str = "h264",
+    video_crf: int = 23,
+    video_gop: int | None = 2,
+    validate_videos: bool = True,
+):
+    configure_lerobot_video_encoder(video_codec, video_crf, video_gop)
     parent_path = Path(data_dir)
     output_path = LEROBOT_HOME / repo_id
 
@@ -127,7 +195,7 @@ def main(data_dir: str, repo_id: str):
         image_writer_processes=0,
     )
 
-    for log_dir in log_folders:
+    for episode_index, log_dir in enumerate(log_folders):
         states, info, downsample = load_log(log_dir)
         
         state_splits = info["split"]
@@ -190,6 +258,8 @@ def main(data_dir: str, repo_id: str):
             camera_stream.release()
 
         dataset.save_episode()
+        if validate_videos:
+            validate_episode_videos(dataset, episode_index, log_dir)
 
 if __name__ == "__main__":
     tyro.cli(main)

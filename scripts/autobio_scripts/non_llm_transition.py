@@ -336,6 +336,96 @@ def _rrt_sampling_bounds(
     return lower, upper
 
 
+_TWO_PI = 2.0 * np.pi
+_PERIODIC_RANGE_MIN_SPAN = _TWO_PI + 1e-3
+
+
+def _periodic_joint_mask(joint_ranges: np.ndarray | None, dim: int) -> np.ndarray:
+    """Identify joints that admit at least one full equivalent revolution."""
+    mask = np.zeros(dim, dtype=bool)
+    if joint_ranges is None:
+        return mask
+    ranges = np.asarray(joint_ranges, dtype=np.float64)
+    if ranges.shape[0] < dim or ranges.shape[1] != 2:
+        return mask
+    spans = ranges[:dim, 1] - ranges[:dim, 0]
+    return np.isfinite(spans) & (spans >= _PERIODIC_RANGE_MIN_SPAN)
+
+
+def _canonicalize_periodic_qpos(
+    qpos: np.ndarray,
+    reference: np.ndarray,
+    joint_ranges: np.ndarray | None,
+) -> np.ndarray:
+    """Choose equivalent 2π joint coordinates nearest to a shared reference."""
+    canonical = np.asarray(qpos, dtype=np.float64).copy()
+    if joint_ranges is None:
+        return canonical
+
+    ranges = np.asarray(joint_ranges, dtype=np.float64)
+    mask = _periodic_joint_mask(ranges, canonical.size)
+    for axis in np.flatnonzero(mask):
+        low, high = ranges[axis]
+        base = canonical[axis]
+        min_turn = int(np.ceil((low - base) / _TWO_PI))
+        max_turn = int(np.floor((high - base) / _TWO_PI))
+        if min_turn > max_turn:
+            continue
+        equivalents = base + _TWO_PI * np.arange(min_turn, max_turn + 1)
+        canonical[axis] = equivalents[np.argmin(np.abs(equivalents - reference[axis]))]
+    return canonical
+
+
+def _joint_distance(
+    first: np.ndarray,
+    second: np.ndarray,
+    joint_ranges: np.ndarray | None,
+) -> float:
+    """Euclidean distance in a locally unwrapped joint-coordinate chart."""
+    aligned_second = _canonicalize_periodic_qpos(second, first, joint_ranges)
+    return float(np.linalg.norm(aligned_second - first))
+
+
+def _steer_toward(
+    start: np.ndarray,
+    target: np.ndarray,
+    *,
+    step_size: float,
+    joint_ranges: np.ndarray | None,
+) -> tuple[np.ndarray, bool]:
+    aligned_target = _canonicalize_periodic_qpos(target, start, joint_ranges)
+    delta = aligned_target - start
+    distance = float(np.linalg.norm(delta))
+    if distance <= 1e-12:
+        return start.copy(), True
+    if distance <= step_size:
+        return _clamp_to_joint_ranges(aligned_target, joint_ranges), True
+    candidate = start + delta / distance * step_size
+    return _clamp_to_joint_ranges(candidate, joint_ranges), False
+
+
+def _sample_rrt_configuration(
+    generator: np.random.Generator,
+    *,
+    start: np.ndarray,
+    target: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    joint_ranges: np.ndarray | None,
+    local_sample_rate: float,
+) -> np.ndarray:
+    """Mix broad exploration with samples in a collision-avoidance corridor."""
+    if float(generator.random()) >= local_sample_rate:
+        sample = generator.uniform(lower, upper)
+    else:
+        alpha = float(generator.random())
+        center = (1.0 - alpha) * start + alpha * target
+        spread = np.maximum(0.35, 0.35 * np.abs(target - start))
+        sample = center + generator.normal(scale=spread, size=start.size)
+        sample = np.clip(sample, lower, upper)
+    return _canonicalize_periodic_qpos(sample, start, joint_ranges)
+
+
 def _reconstruct_rrt_path(nodes: list[np.ndarray], parents: list[int], end_index: int) -> list[np.ndarray]:
     path = []
     index = end_index
@@ -353,16 +443,27 @@ def plan_joint_path_rrt(
     path_validator: PathValidator | None,
     joint_ranges=None,
     rng: np.random.Generator | None = None,
-    max_iterations: int = 512,
-    step_size: float = 0.25,
-    goal_sample_rate: float = 0.2,
-    goal_tolerance: float = 0.15,
+    max_iterations: int = 2048,
+    step_size: float = 0.30,
+    goal_sample_rate: float = 0.25,
+    goal_tolerance: float = 0.12,
+    local_sample_rate: float = 0.70,
+    connect_max_steps: int = 64,
 ) -> JointPathPlan:
+    """Plan a collision-free joint path with bidirectional RRT-Connect.
+
+    The planner uses a local start-target sampling corridor for efficient
+    restoration motions while retaining global samples for obstacle detours.
+    Joints with more than one full revolution of valid range are canonicalized
+    to the equivalent coordinate nearest to the start state.
+    """
     start = _as_joint_vector(start_qpos)
     target = _as_joint_vector(target_qpos, dim=start.size)
     if target.size != start.size:
         raise ValueError(f"Target qpos dim {target.size} does not match start dim {start.size}")
 
+    ranges = None if joint_ranges is None else np.asarray(joint_ranges, dtype=np.float64)
+    target = _canonicalize_periodic_qpos(target, start, ranges)
     direct_path = [start, target]
     if path_validator is None:
         return JointPathPlan(waypoints=direct_path, status="rrt_direct_no_validator", validation=None)
@@ -373,65 +474,120 @@ def plan_joint_path_rrt(
 
     last_payload = payload
     generator = rng if rng is not None else np.random.default_rng()
-    lower, upper = _rrt_sampling_bounds(
-        start,
-        target,
-        None if joint_ranges is None else np.asarray(joint_ranges, dtype=np.float64),
-    )
-    nodes = [start]
-    parents = [-1]
+    lower, upper = _rrt_sampling_bounds(start, target, ranges)
+    start_nodes = [start]
+    start_parents = [-1]
+    goal_nodes = [target]
+    goal_parents = [-1]
     iterations = max(1, int(max_iterations))
     edge_step = max(1e-6, float(step_size))
     goal_rate = float(np.clip(goal_sample_rate, 0.0, 1.0))
-    tolerance = max(1e-6, float(goal_tolerance))
+    local_rate = float(np.clip(local_sample_rate, 0.0, 1.0))
+    max_connect = max(1, int(connect_max_steps))
 
-    for _ in range(iterations):
-        if float(generator.random()) < goal_rate:
-            sample = target
-        else:
-            sample = generator.uniform(lower, upper)
-
-        distances = np.asarray([np.linalg.norm(node - sample) for node in nodes], dtype=np.float64)
+    def extend_tree(nodes, parents, sample):
+        distances = np.asarray(
+            [_joint_distance(node, sample, ranges) for node in nodes],
+            dtype=np.float64,
+        )
         nearest_index = int(np.argmin(distances))
         nearest = nodes[nearest_index]
-        delta = sample - nearest
-        distance = float(np.linalg.norm(delta))
-        if distance <= 1e-12:
-            continue
+        candidate, reached = _steer_toward(
+            nearest,
+            sample,
+            step_size=edge_step,
+            joint_ranges=ranges,
+        )
+        if np.allclose(candidate, nearest, atol=1e-12, rtol=0.0):
+            return None, False, last_payload
 
-        if distance > edge_step:
-            candidate = nearest + (delta / distance) * edge_step
-        else:
-            candidate = sample
-        candidate = _clamp_to_joint_ranges(candidate, np.column_stack([lower, upper]))
-
-        valid, payload = _validation_is_valid(path_validator([nearest, candidate]))
-        last_payload = payload
-        if not valid:
-            continue
+        is_valid, edge_payload = _validation_is_valid(path_validator([nearest, candidate]))
+        if not is_valid:
+            return None, False, edge_payload
 
         nodes.append(candidate)
         parents.append(nearest_index)
-        candidate_index = len(nodes) - 1
+        return len(nodes) - 1, reached, edge_payload
 
-        if np.linalg.norm(candidate - target) <= tolerance:
-            valid, payload = _validation_is_valid(path_validator([candidate, target]))
+    def connect_tree(nodes, parents, sample):
+        edge_payload = last_payload
+        for _connect_step in range(max_connect):
+            candidate_index, reached, edge_payload = extend_tree(nodes, parents, sample)
+            if candidate_index is None:
+                return None, edge_payload
+            if reached:
+                return candidate_index, edge_payload
+        return None, edge_payload
+
+    grow_from_start = True
+    for iteration in range(iterations):
+        if grow_from_start:
+            active_nodes, active_parents = start_nodes, start_parents
+            other_nodes, other_parents = goal_nodes, goal_parents
+            opposite_root = target
+        else:
+            active_nodes, active_parents = goal_nodes, goal_parents
+            other_nodes, other_parents = start_nodes, start_parents
+            opposite_root = start
+
+        if float(generator.random()) < goal_rate:
+            sample = opposite_root
+        else:
+            sample = _sample_rrt_configuration(
+                generator,
+                start=start,
+                target=target,
+                lower=lower,
+                upper=upper,
+                joint_ranges=ranges,
+                local_sample_rate=local_rate,
+            )
+
+        active_index, _reached, payload = extend_tree(active_nodes, active_parents, sample)
+        last_payload = payload
+        if active_index is not None:
+            other_index, payload = connect_tree(
+                other_nodes,
+                other_parents,
+                active_nodes[active_index],
+            )
             last_payload = payload
-            if valid:
-                nodes.append(target)
-                parents.append(candidate_index)
-                return JointPathPlan(
-                    waypoints=_reconstruct_rrt_path(nodes, parents, len(nodes) - 1),
-                    status="rrt",
-                    validation=payload,
-                )
+            if other_index is not None:
+                if grow_from_start:
+                    start_path = _reconstruct_rrt_path(start_nodes, start_parents, active_index)
+                    goal_path = _reconstruct_rrt_path(goal_nodes, goal_parents, other_index)
+                else:
+                    start_path = _reconstruct_rrt_path(start_nodes, start_parents, other_index)
+                    goal_path = _reconstruct_rrt_path(goal_nodes, goal_parents, active_index)
+                combined_path = start_path + list(reversed(goal_path))[1:]
+                path_is_valid, full_path_payload = _validation_is_valid(path_validator(combined_path))
+                last_payload = full_path_payload
+                if path_is_valid:
+                    return JointPathPlan(
+                        waypoints=combined_path,
+                        status="rrt",
+                        validation={
+                            "valid": True,
+                            "reason": "rrt_connect_path_validated",
+                            "iterations": iteration + 1,
+                            "start_tree_nodes": len(start_nodes),
+                            "goal_tree_nodes": len(goal_nodes),
+                            "last_edge_validation": payload,
+                            "full_path_validation": full_path_payload,
+                        },
+                    )
+
+        grow_from_start = not grow_from_start
 
     failure_payload = {
         "valid": False,
         "reason": "rrt_failed_skip_action",
         "last_validation": last_payload,
         "iterations": iterations,
-        "nodes": len(nodes),
+        "nodes": len(start_nodes) + len(goal_nodes),
+        "start_tree_nodes": len(start_nodes),
+        "goal_tree_nodes": len(goal_nodes),
+        "planner": "bidirectional_rrt_connect",
     }
     return JointPathPlan(
         waypoints=[],

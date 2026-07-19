@@ -77,6 +77,33 @@ def test_take_balance_uses_slot_one_and_randomizes_experimental(
     _assert_tube_position(task, task.tube, expected_experimental_position)
 
 
+@pytest.mark.parametrize(
+    ("task_name", "tube_attribute", "slot_id"),
+    [
+        ("place_experimental_tube_into_centrifuge5910", "tube", 0),
+        ("place_balance_tube_into_centrifuge5910", "tube2", 1),
+    ],
+)
+def test_place_tube_requires_tube_to_be_seated_in_slot(
+    monkeypatch,
+    task_name,
+    tube_attribute,
+    slot_id,
+):
+    task = _reset_task(task_name, monkeypatch, random_choice=0)
+    tube = getattr(task, tube_attribute)
+    slot_position = task._slot_position(slot_id)
+
+    task.data.qpos[tube.pos_span] = slot_position
+    assert task.check()
+
+    task.data.qpos[tube.pos_span] = slot_position + np.array([0.0, 0.0, 0.02])
+    assert not task.check()
+
+    task.data.qpos[tube.pos_span] = slot_position + np.array([0.02, 0.0, 0.0])
+    assert not task.check()
+
+
 def _expert_case_source(case_name: str) -> str:
     source = Path(centrifuge_tasks.__file__).read_text(encoding="utf-8")
     execute_source = source.split(

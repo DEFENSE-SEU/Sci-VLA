@@ -676,6 +676,18 @@ def parse_args():
     parser.add_argument("--llm-image-max-side", type=int, default=None, help="Max image side before sending transition images to VLM; 0 disables compression")
     parser.add_argument("--llm-image-quality", type=int, default=None, help="JPEG quality for compressed transition images")
     parser.add_argument(
+        "--llm-plan-verifier",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable the Stage 1.5 LLM plan verifier during LLM transition generation. Disabled by default; use --llm-plan-verifier to enable.",
+    )
+    parser.add_argument(
+        "--llm-plan-verification-revisions",
+        type=int,
+        default=2,
+        help="Maximum plan regeneration attempts after verifier failures.",
+    )
+    parser.add_argument(
         "--llm-local-retrieval-first",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -785,6 +797,8 @@ if __name__ == "__main__":
         "timeout": args.llm_timeout,
         "image_max_side": args.llm_image_max_side,
         "image_quality": args.llm_image_quality,
+        "verifier_enabled": args.llm_plan_verifier,
+        "max_plan_verification_revisions": args.llm_plan_verification_revisions,
         "local_retrieval_first": args.llm_local_retrieval_first,
         "local_retrieval_cutoff": args.llm_local_retrieval_cutoff,
         "ready_memory_enabled": args.ready_memory_enabled,

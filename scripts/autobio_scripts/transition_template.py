@@ -211,11 +211,11 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.12, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.08, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": 0.1, "steps": 120}, {"op": "rotate", "axis": "z", "angle_deg": 25, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.1, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.06, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": -0.25, "steps": 200}, {"op": "translate", "axis": "y", "distance_m": -0.25, "steps": 200}, {"op": "translate", "axis": "z", "distance_m": 0.13, "steps": 130}, {"op": "translate", "axis": "x", "distance_m": -0.02, "steps": 110}])
+        self.execute_transition_commands([{"op": "translate", "axis": "y", "distance_m": -0.2, "steps": 100}, {"op": "translate", "axis": "z", "distance_m": 0.12, "steps": 100}, {"op": "translate", "axis": "x", "distance_m": -0.0311, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": -0.25, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": -0.0983, "steps": 100}, {"op": "translate", "axis": "z", "distance_m": 0.2032, "steps": 110}])
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_rrt_path
-        target_qpos_candidates = [[-2.4849634170532227, -1.1125943660736084, 0.9773984551429749, -0.36496174335479736, -0.9897647500038147, -2.9190187454223633, 0.0025936260353773832]]
+        target_qpos_candidates = [[-2.4115986824035645, -1.2886576652526855, 1.0136297941207886, -0.3822097182273865, -0.973992645740509, -2.879286050796509, 0.0025961888022720814]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],
