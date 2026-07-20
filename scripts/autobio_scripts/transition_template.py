@@ -211,11 +211,11 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        self.execute_transition_commands([{"op": "translate", "axis": "y", "distance_m": -0.2, "steps": 100}, {"op": "translate", "axis": "z", "distance_m": 0.12, "steps": 100}, {"op": "translate", "axis": "x", "distance_m": -0.0311, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": -0.25, "steps": 120}, {"op": "translate", "axis": "y", "distance_m": -0.0983, "steps": 100}, {"op": "translate", "axis": "z", "distance_m": 0.2032, "steps": 110}])
+        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "x", "distance_m": -0.2, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 100}, {"op": "rotate", "axis": "z", "angle_deg": 25, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 140}, {"op": "translate", "axis": "y", "distance_m": 0.2086, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": 0.25, "steps": 140}, {"op": "translate", "axis": "x", "distance_m": 0.25, "steps": 140}, {"op": "translate", "axis": "x", "distance_m": 0.2243, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": -0.1417, "steps": 110}])
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_rrt_path
-        target_qpos_candidates = [[-2.4115986824035645, -1.2886576652526855, 1.0136297941207886, -0.3822097182273865, -0.973992645740509, -2.879286050796509, 0.0025961888022720814]]
+        target_qpos_candidates = [[-3.444404363632202, -1.6620066165924072, 1.1485657691955566, -1.3022311925888062, -1.6711045503616333, -1.7164394855499268, 0.7548233866691589]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],

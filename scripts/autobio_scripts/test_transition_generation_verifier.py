@@ -104,6 +104,99 @@ def test_disabled_verifier_accepts_over_limit_translate_without_plan_constraint_
     assert "0.2711" in execute_body
 
 
+def test_disabled_verifier_defaults_wait_steps_without_local_verification_failure():
+    transition_generation = _import_transition_generation_with_stubs()
+    _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan
+
+    requested_stages = []
+
+    def fake_request_json(**kwargs):
+        stage_name = kwargs["stage_name"]
+        requested_stages.append(stage_name)
+        if stage_name == "stage-1-planning":
+            return {
+                "commands": [{"op": "wait"}],
+                "plan_steps": ["wait briefly"],
+                "safety_notes": ["verifier disabled regression"],
+                "final_target_qpos": [0, 0, 0, 0, 0, 0],
+                "final_target_gripper": 0,
+            }
+        if stage_name == "stage-1.5-plan-verifier":
+            raise AssertionError("verifier should be disabled")
+        raise AssertionError(f"unexpected stage: {stage_name}")
+
+    plan_obj, commands, verification = _generate_verified_transition_plan(
+        client=object(),
+        model_name="dummy-model",
+        planning_prompt="planner prompt",
+        task_prompt="target task",
+        front_image_data_url="front",
+        side_image_data_url="side",
+        target_front_image_data_url=None,
+        verifier_enabled=False,
+        request_json_object=fake_request_json,
+    )
+
+    assert requested_stages == ["stage-1-planning"]
+    assert verification["passed"] is True
+    assert verification["verifier_enabled"] is False
+    assert commands == [{"op": "wait", "steps": transition_generation.DEFAULT_TRANSITION_WAIT_STEPS}]
+    assert plan_obj["commands"] == commands
+
+
+def test_enabled_verifier_keeps_wait_steps_strict():
+    transition_generation = _import_transition_generation_with_stubs()
+
+    try:
+        transition_generation._commands_from_plan_obj(
+            {"commands": [{"op": "wait"}]},
+            enforce_plan_constraints=True,
+            allow_schema_defaults=False,
+        )
+    except ValueError as exc:
+        assert "wait command requires steps" in str(exc)
+    else:
+        raise AssertionError("expected strict verifier path to reject wait without steps")
+
+
+def test_disabled_verifier_compile_error_is_not_reported_as_local_verification():
+    transition_generation = _import_transition_generation_with_stubs()
+    _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan
+
+    def fake_request_json(**kwargs):
+        stage_name = kwargs["stage_name"]
+        if stage_name == "stage-1-planning":
+            return {
+                "commands": [{"op": "teleport"}],
+                "plan_steps": ["unsupported transition"],
+                "safety_notes": ["compile failure regression"],
+                "final_target_qpos": [0, 0, 0, 0, 0, 0],
+                "final_target_gripper": 0,
+            }
+        if stage_name == "stage-1.5-plan-verifier":
+            raise AssertionError("verifier should be disabled")
+        raise AssertionError(f"unexpected stage: {stage_name}")
+
+    try:
+        _generate_verified_transition_plan(
+            client=object(),
+            model_name="dummy-model",
+            planning_prompt="planner prompt",
+            task_prompt="target task",
+            front_image_data_url="front",
+            side_image_data_url="side",
+            target_front_image_data_url=None,
+            verifier_enabled=False,
+            request_json_object=fake_request_json,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert "could not be compiled into executable transition commands" in message
+        assert "Local command validation failed" not in message
+    else:
+        raise AssertionError("expected unsupported command to fail compilation")
+
+
 def test_verified_planning_retries_with_bad_action_feedback():
     transition_generation = _import_transition_generation_with_stubs()
     _generate_verified_transition_plan = transition_generation._generate_verified_transition_plan

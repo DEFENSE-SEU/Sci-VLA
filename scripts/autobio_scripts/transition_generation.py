@@ -20,6 +20,7 @@ from camera_calibration_enhancement import (
 )
 
 MIN_TRANSITION_MOTION_STEPS = 100
+DEFAULT_TRANSITION_WAIT_STEPS = MIN_TRANSITION_MOTION_STEPS
 
 
 class NoValidQposCandidateError(ValueError):
@@ -793,7 +794,12 @@ def _compact_number(value: float) -> int | float:
     return int(value) if value.is_integer() else value
 
 
-def _normalize_transition_command(command: dict, *, enforce_plan_constraints: bool = True) -> dict | None:
+def _normalize_transition_command(
+    command: dict,
+    *,
+    enforce_plan_constraints: bool = True,
+    allow_schema_defaults: bool = False,
+) -> dict | None:
     if not isinstance(command, dict):
         raise ValueError(f"Transition command must be an object, got {type(command).__name__}")
     op = str(command.get("op", command.get("action", ""))).strip().lower()
@@ -869,7 +875,8 @@ def _normalize_transition_command(command: dict, *, enforce_plan_constraints: bo
         return normalized
 
     if op in {"wait", "hold"}:
-        steps = _optional_positive_int(command.get("steps", command.get("delay")), default=None, name="steps")
+        default_steps = DEFAULT_TRANSITION_WAIT_STEPS if allow_schema_defaults else None
+        steps = _optional_positive_int(command.get("steps", command.get("delay")), default=default_steps, name="steps")
         if steps is None:
             raise ValueError("wait command requires steps")
         return {"op": "wait", "steps": steps}
@@ -877,7 +884,12 @@ def _normalize_transition_command(command: dict, *, enforce_plan_constraints: bo
     raise ValueError(f"Unsupported transition command op: {op!r}")
 
 
-def _normalize_transition_commands(commands: list, *, enforce_plan_constraints: bool = True) -> list[dict]:
+def _normalize_transition_commands(
+    commands: list,
+    *,
+    enforce_plan_constraints: bool = True,
+    allow_schema_defaults: bool = False,
+) -> list[dict]:
     if not isinstance(commands, list):
         raise ValueError("Transition commands must be a list")
     normalized = []
@@ -885,6 +897,7 @@ def _normalize_transition_commands(commands: list, *, enforce_plan_constraints: 
         normalized_command = _normalize_transition_command(
             command,
             enforce_plan_constraints=enforce_plan_constraints,
+            allow_schema_defaults=allow_schema_defaults,
         )
         if normalized_command is not None:
             normalized.append(normalized_command)
@@ -893,7 +906,12 @@ def _normalize_transition_commands(commands: list, *, enforce_plan_constraints: 
     return normalized
 
 
-def _commands_from_plan_steps(plan_steps: list[str], *, enforce_plan_constraints: bool = True) -> list[dict]:
+def _commands_from_plan_steps(
+    plan_steps: list[str],
+    *,
+    enforce_plan_constraints: bool = True,
+    allow_schema_defaults: bool = False,
+) -> list[dict]:
     commands = []
     for raw_step in plan_steps:
         step = str(raw_step).strip().lower()
@@ -938,19 +956,33 @@ def _commands_from_plan_steps(plan_steps: list[str], *, enforce_plan_constraints
                     "angle_deg": float(rotate_match.group("value")) * sign,
                 }
             )
-    return _normalize_transition_commands(commands, enforce_plan_constraints=enforce_plan_constraints)
+    return _normalize_transition_commands(
+        commands,
+        enforce_plan_constraints=enforce_plan_constraints,
+        allow_schema_defaults=allow_schema_defaults,
+    )
 
 
-def _commands_from_plan_obj(plan_obj: dict, *, enforce_plan_constraints: bool = True) -> list[dict]:
+def _commands_from_plan_obj(
+    plan_obj: dict,
+    *,
+    enforce_plan_constraints: bool = True,
+    allow_schema_defaults: bool = False,
+) -> list[dict]:
     commands = plan_obj.get("commands")
     if commands is not None:
-        return _normalize_transition_commands(commands, enforce_plan_constraints=enforce_plan_constraints)
+        return _normalize_transition_commands(
+            commands,
+            enforce_plan_constraints=enforce_plan_constraints,
+            allow_schema_defaults=allow_schema_defaults,
+        )
     plan_steps = plan_obj.get("plan_steps", [])
     if not isinstance(plan_steps, list) or len(plan_steps) == 0:
         raise ValueError("Stage-1 planning output missing non-empty commands")
     return _commands_from_plan_steps(
         plan_steps,
         enforce_plan_constraints=enforce_plan_constraints,
+        allow_schema_defaults=allow_schema_defaults,
     )
 
 
@@ -1459,13 +1491,17 @@ def _generate_verified_transition_plan(
             transition_commands = _commands_from_plan_obj(
                 plan_obj,
                 enforce_plan_constraints=verifier_enabled,
+                allow_schema_defaults=not verifier_enabled,
             )
             plan_obj["commands"] = transition_commands
         except Exception as e:
             transition_commands = []
-            verification = _local_plan_verification_failure(e)
             if not verifier_enabled:
-                raise ValueError(_summarize_plan_verification_issues(verification)) from e
+                raise ValueError(
+                    "Stage-1 planning output could not be compiled into executable transition commands: "
+                    f"{e}"
+                ) from e
+            verification = _local_plan_verification_failure(e)
         else:
             if not verifier_enabled:
                 verification = {
