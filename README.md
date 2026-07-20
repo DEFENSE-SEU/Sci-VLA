@@ -16,7 +16,6 @@ Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simula
 
 - Long-horizon task decomposition and execution
 - Integration with OpenPI training and serving pipeline
-- Rich simulation assets for robotics evaluation
 
 ## Quick Links
 
@@ -24,7 +23,6 @@ Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simula
 - [Training Data Generation](#training-data-generation)
 - [Fine-tuning](#fine-tuning)
 - [Evaluation](#evaluation)
-- [Ready memory mode](#ready-memory-mode)
 
 ## Installation (editable local install)
 
@@ -120,12 +118,14 @@ bash launch/finetune/train_labutopia.sh
 If you prefer a direct invocation, use LABVLA's `scripts/train.py` with the same
 data root, repo id, schema, and stats settings from the launcher.
 
+
+
 ## Evaluation
 
-### Extract initial qpos json file from lerobot dataset
+To evaluate the policy model, open a shell and run:
 
 ```bash
-python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
+XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_thermalcycler_pi05' --policy.dir 'checkpoints/mani_thermalcycler_pi05/mani_thermalcycler_pi05_finetune/49999/'
 ```
 
 ### Ready memory mode
@@ -164,7 +164,8 @@ python ./scripts/autobio_scripts/evaluate.py \
   --ready-memory-enabled \
   --ready-memory-db logs/ready_memory_index.json \
   --ready-memory-window-size 25 \
-  --ready-memory-max-iterations 4
+  --ready-memory-max-iterations 4 \
+  --llm-backend-mode chat
 ```
 
 To retrieve directly from a local LeRobot dataset without first exporting an
@@ -183,34 +184,7 @@ dataset mode). The selected state is written to
 `logs/target_ready_state_selected.json`, and the transition-compatible result
 is written to `logs/target_qpos_selected.json`.
 
-<!-- ### Convert jax model to pytorch model
-If you want to use pytorch model to evaluate tasks, converting the jax checkpoint to pytorch is needed:
-
-```bash
-cp -r src/openpi/models_pytorch/transformers_replace/* ~/anaconda3/envs/scivla/lib/python3.11/site-packages/transformers
-python scripts/convert_jax_model_to_pytorch.py --checkpoint_dir checkpoints/mani_thermalcycler_pi05/ --config_name mani_thermalcycler_pi05 --output_path checkpoints/mani_thermalcycler_pi05_pytorch
-```
-
-### Evaluate the policy model on simulations
-To evaluate the policy model, open a shell and run:
-
-```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_thermalcycler_pi05' --policy.dir 'checkpoints/mani_thermalcycler_pi05/mani_thermalcycler_pi05_finetune/49999/'
-```
-
-then open another shell and run evaluation:
-
-```bash
-export BASE_URL="https://openai.sufy.com/v1"
-export MODEL_NAME="qwen3.5-397b-a17b"
-export API_KEY=""
-
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" --experiment-mode full
-```
-
-Add `--no-render-video` to skip replay video capture and mp4 writing while still running evaluation and counting success.
-
-### Problem-validation video demo
+<!-- ### Problem-validation video demo
 
 The policy server must already be running, and the local dataset must exist at
 `~/.cache/huggingface/lerobot/mani_thermalcycler`. Then run the fixed demo with:
@@ -241,6 +215,12 @@ The restore motion is included in the same replay video as both VLA prompts.
 Front- and left-view MP4s are saved under `videos/` with the fixed
 `problem_validation_open_lid_place_pcr_plate` filename prefix. -->
 
+
+<!-- ```bash
+python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
+``` -->
+
+
 <!-- python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
 
 python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --time_limit 30 --prompts "press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
@@ -251,6 +231,7 @@ python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1'
 
 python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
 -->
+
 
 ### Experiment modes
 
@@ -291,12 +272,7 @@ python ./scripts/autobio_scripts/evaluate.py \
   --experiment-mode no-transition
 ```
 
-### Evaluate the model using local VLM model (Qwen3.5)
-
-Establish the policy model:
-```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_thermalcycler_pi05' --policy.dir 'checkpoints/mani_thermalcycler_pi05/mani_thermalcycler_pi05_finetune/49999/'
-```
+### Evaluate the model using local VLM model
 
 ```bash
 python -m vllm.entrypoints.openai.api_server \
@@ -305,7 +281,6 @@ python -m vllm.entrypoints.openai.api_server \
   --host 192.168.124.33 \
   --port 9000
 ```
-
 
 then open another shell window and run:
 
@@ -330,9 +305,6 @@ python ./scripts/autobio_scripts/evaluate.py \
 <!-- ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/Sci-VLA&type=Date)](https://star-history.com/#DEFENSE-SEU/Sci-VLA&Date) -->
-
-
-
 
 
 ## Citation

@@ -90,7 +90,7 @@ After it is cached, training and inference can run locally.
 python scripts/intervention_switch/infer_video.py \
   --checkpoint checkpoints/completion_switch_v1/best.pt \
   --video input.mp4 \
-  --text "the thermal cycler lid is fully closed" \
+  --text "close the lid of thermal cycler" \
   --output output_annotated.mp4
 ~~~
 
