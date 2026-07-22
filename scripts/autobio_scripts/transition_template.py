@@ -211,11 +211,11 @@ class TransitionExpert:
         # Initial IK, must not be removed
         self.ik.initial_qpos = self.data.qpos[self.jnt_span]
 
-        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "x", "distance_m": -0.2, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.08, "steps": 100}, {"op": "rotate", "axis": "z", "angle_deg": 25, "steps": 100}, {"op": "translate", "axis": "y", "distance_m": 0.25, "steps": 140}, {"op": "translate", "axis": "y", "distance_m": 0.2086, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": 0.25, "steps": 140}, {"op": "translate", "axis": "x", "distance_m": 0.25, "steps": 140}, {"op": "translate", "axis": "x", "distance_m": 0.2243, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": -0.1417, "steps": 110}])
+        self.execute_transition_commands([{"op": "open_gripper", "delay": 100}, {"op": "translate", "axis": "z", "distance_m": 0.15, "steps": 120}, {"op": "rotate", "axis": "z", "angle_deg": 20, "steps": 120}, {"op": "translate", "axis": "x", "distance_m": -0.25, "steps": 160}, {"op": "translate", "axis": "y", "distance_m": 0.1, "steps": 120}, {"op": "translate", "axis": "z", "distance_m": 0.25, "steps": 180}, {"op": "translate", "axis": "x", "distance_m": -0.25, "steps": 160}, {"op": "translate", "axis": "y", "distance_m": 0.05, "steps": 100}, {"op": "translate", "axis": "z", "distance_m": 0.25, "steps": 180}, {"op": "translate", "axis": "x", "distance_m": -0.25, "steps": 160}, {"op": "translate", "axis": "y", "distance_m": 0.0063, "steps": 100}, {"op": "translate", "axis": "z", "distance_m": 0.1412, "steps": 120}])
 
         # Restore to target pose (hard-inserted from planning JSON).
         from transition_generation import select_target_qpos_after_transition, validate_qpos_rrt_path
-        target_qpos_candidates = [[-3.444404363632202, -1.6620066165924072, 1.1485657691955566, -1.3022311925888062, -1.6711045503616333, -1.7164394855499268, 0.7548233866691589]]
+        target_qpos_candidates = [[-6.283143043518066, -1.3121533393859863, 0.18979614973068237, 0.1861255019903183, -0.6473639607429504, -3.868467092514038, 0.0025952330324798822]]
         target_selection = select_target_qpos_after_transition(
             target_qpos_candidates,
             self.data.qpos[self.jnt_span],

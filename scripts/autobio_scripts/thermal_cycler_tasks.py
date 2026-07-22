@@ -66,7 +66,7 @@ THERMAL_CYCLER_ARM_PERTURB_RANGES = {
 
 THERMAL_CYCLER_LONG_TASK_FIRST_ATOMIC_TASK = {
     "thermal_cycler_long_task_1": "open_thermal_cycler_lid",
-    "thermal_cycler_long_task_2": "screw_loosen_knob",
+    "thermal_cycler_long_task_2": "press_thermal_cycler_button",
 }
 
 

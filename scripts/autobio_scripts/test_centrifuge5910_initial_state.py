@@ -242,7 +242,7 @@ def test_long_tasks_use_first_atomic_task_arm_perturb_ranges():
     }
     assert thermal_mapping == {
         "thermal_cycler_long_task_1": "open_thermal_cycler_lid",
-        "thermal_cycler_long_task_2": "screw_loosen_knob",
+        "thermal_cycler_long_task_2": "press_thermal_cycler_button",
     }
     assert "CENTRIFUGE5910_LONG_TASK_FIRST_ATOMIC_TASK.get(self.task, self.task)" in centrifuge_source
     assert "THERMAL_CYCLER_LONG_TASK_FIRST_ATOMIC_TASK.get(self.task, self.task)" in thermal_source

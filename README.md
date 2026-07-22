@@ -159,13 +159,13 @@ export API_KEY=""
 python ./scripts/autobio_scripts/evaluate.py \
   --task "thermal_cycler_long_task_1" \
   --time_limit 30 \
-  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
   --experiment-mode full \
   --ready-memory-enabled \
   --ready-memory-db logs/ready_memory_index.json \
   --ready-memory-window-size 25 \
   --ready-memory-max-iterations 4 \
-  --llm-backend-mode chat
+  --llm-backend-mode chat \
+  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler" 
 ```
 
 To retrieve directly from a local LeRobot dataset without first exporting an
@@ -216,20 +216,25 @@ Front- and left-view MP4s are saved under `videos/` with the fixed
 `problem_validation_open_lid_place_pcr_plate` filename prefix. -->
 
 
-<!-- ```bash
+
+<!-- 
+
+python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_centrifuge5910
+
+python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20
+
+python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --time_limit 30 --prompts "press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20
+
+python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20
+
 python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
-``` -->
 
+python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" --experiment-mode baseline --num_episodes 20
 
-<!-- python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
+python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_2' --time_limit 30 --prompts "press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler,close the lid of the thermal cycler" --experiment-mode baseline --num_episodes 20
 
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --time_limit 30 --prompts "press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
+python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler" --experiment-mode baseline --num_episodes 20
 
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_2' --time_limit 30 --prompts "press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler,close the lid of the thermal cycler" --experiment-mode baseline --num_episodes 20 --no-render-video
-
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler" --experiment-mode baseline --num_episodes 20 --no-render-video
-
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20 --no-render-video
 -->
 
 
