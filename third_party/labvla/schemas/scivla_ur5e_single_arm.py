@@ -1,6 +1,6 @@
-"""Sci-VLA UR5e single-arm schema for LABVLA.
+"""AtomBridge UR5e single-arm schema for LABVLA.
 
-The current Sci-VLA conversion writes 6 UR5e joint dimensions plus one
+The current AtomBridge conversion writes 6 UR5e joint dimensions plus one
 Robotiq 2F85 gripper dimension into the same `state` / `actions` columns.
 """
 
@@ -10,7 +10,7 @@ from src.schema.blueprint import SingleArm, SingleArmBlueprint
 
 
 _SCHEMA = SingleArmBlueprint(
-    schema_id="scivla_ur5e_single_arm_v1",
+    schema_id="atombridge_ur5e_single_arm_v1",
     robot_type="ur5e",
     arm=SingleArm(
         dof=6,
@@ -30,7 +30,7 @@ _SCHEMA = SingleArmBlueprint(
     gripper_semantic="position",
 ).build()
 
-# SingleArmBlueprint normalizes source camera names. Sci-VLA's converted
+# SingleArmBlueprint normalizes source camera names. AtomBridge's converted
 # LeRobot columns intentionally contain slash-style keys, so restore them after
 # build while keeping the blueprint-derived state/action layout.
 SCHEMA = replace(

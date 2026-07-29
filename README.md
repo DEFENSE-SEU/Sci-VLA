@@ -1,4 +1,4 @@
-# Sci-VLA
+# AtomBridge
 
 <p align="center">
 	<b>Agentic VLA Inference Plugin for Long-Horizon Scientific Manipulation</b>
@@ -8,11 +8,11 @@
 	<a href="https://arxiv.org/abs/2602.09430"><img alt="Paper" src="https://img.shields.io/badge/arXiv-2602.09430-b31b1b.svg"></a>
 </p>
 
-This repository contains the Sci-VLA architecture and simulation assets (including Autobio assets and newly added assets).
+This repository contains the AtomBridge pipeline and Mujoco simulation assets (including Autobio assets and newly added assets).
 
 ## Overview
 
-Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simulation environments.
+AtomBridge focuses on agentic, long-horizon task execution in scientific lab simulation environments.
 
 - Long-horizon task decomposition and execution
 - Integration with OpenPI training and serving pipeline
@@ -27,8 +27,8 @@ Sci-VLA focuses on agentic, long-horizon task execution in scientific lab simula
 ## Installation (editable local install)
 
 ```bash
-conda create -n scivla python=3.11
-conda activate scivla
+conda create -n atombridge python=3.11
+conda activate atombridge
 conda install ffmpeg=7.1.1 -c conda-forge
 cd third_party/openpi
 pip install uv
@@ -46,8 +46,6 @@ pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorc
 pip install flash_attn==2.8.3 --no-build-isolation
 pip install -r requirements.txt
 ```
-<!-- sudo apt-get update
-sudo apt-get install -y libegl1 libgles2 libgl1 libglvnd0 libosmesa6 libosmesa6-dev -->
 
 ## Training Data Generation
 Generate raw expert demonstrations for each scene separately:
@@ -85,26 +83,27 @@ python scripts/compute_norm_stats.py --config-name mani_thermalcycler_pi05
 XLA_PYTHON_CLIENT_MEM_FRACTION=.95 python scripts/train.py mani_thermalcycler_pi05 --exp-name mani_thermalcycler_pi05_finetune
 ```
 
-### LABVLA fine-tuning
 
-Sci-VLA UR5e demonstrations use the LABVLA schema `scivla_ur5e_single_arm`.
+<!-- ### LABVLA fine-tuning
+
+AtomBridge UR5e demonstrations use the LABVLA schema `atombridge_ur5e_single_arm`.
 The existing `scripts/convert.py` output can be reused directly.
 
 ```bash
 cd third_party/labvla
 python -m data_process stats \
   --dataset ~/.cache/huggingface/lerobot/mani_centrifuge5910 \
-  --schema scivla_ur5e_single_arm
+  --schema atombridge_ur5e_single_arm
 ```
 
-Use LABVLA's training launcher or `scripts/train.py` with the Sci-VLA repo id,
-the LeRobot cache root, and `DatasetSchema=scivla_ur5e_single_arm`. For example,
+Use LABVLA's training launcher or `scripts/train.py` with the AtomBridge repo id,
+the LeRobot cache root, and `DatasetSchema=atombridge_ur5e_single_arm`. For example,
 set the launcher variables to:
 
 ```bash
 DataRoot=~/.cache/huggingface/lerobot
 RepoIds=mani_centrifuge5910
-DatasetSchema=scivla_ur5e_single_arm
+DatasetSchema=atombridge_ur5e_single_arm
 ExternalStatsPath=~/.cache/huggingface/lerobot/mani_centrifuge5910/meta/stats.json
 ```
 
@@ -116,11 +115,13 @@ bash launch/finetune/train_labutopia.sh
 ```
 
 If you prefer a direct invocation, use LABVLA's `scripts/train.py` with the same
-data root, repo id, schema, and stats settings from the launcher.
+data root, repo id, schema, and stats settings from the launcher. -->
 
 
 
 ## Evaluation
+
+### Run policy
 
 To evaluate the policy model, open a shell and run:
 
@@ -128,7 +129,7 @@ To evaluate the policy model, open a shell and run:
 XLA_PYTHON_CLIENT_MEM_FRACTION=.6 CUDA_VISIBLE_DEVICES=0 python scripts/serve_policy.py policy:checkpoint --policy.config 'mani_thermalcycler_pi05' --policy.dir 'checkpoints/mani_thermalcycler_pi05/mani_thermalcycler_pi05_finetune/49999/'
 ```
 
-### Ready memory mode
+### Start evaluate
 
 Ready memory uses visual A/B comparisons over a demonstration trajectory to
 retrieve a state immediately before the next atomic operation. It is used for
@@ -158,6 +159,7 @@ export API_KEY=""
 
 python ./scripts/autobio_scripts/evaluate.py \
   --task "thermal_cycler_long_task_1" \
+  --completion-model-checkpoint checkpoints/completion_switch_v1_stride10/best.pt \
   --time_limit 30 \
   --experiment-mode full \
   --ready-memory-enabled \
@@ -165,7 +167,7 @@ python ./scripts/autobio_scripts/evaluate.py \
   --ready-memory-window-size 25 \
   --ready-memory-max-iterations 4 \
   --llm-backend-mode chat \
-  --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler" 
+  --prompts "open lid of thermal cycler,place pcr Plate into thermal cycler,close lid of thermal cycler,screw tighten the knob,press the button,screw loosen the knob,open lid of thermal cycler,take pcr Plate from thermal cycler" 
 ```
 
 To retrieve directly from a local LeRobot dataset without first exporting an
@@ -184,58 +186,6 @@ dataset mode). The selected state is written to
 `logs/target_ready_state_selected.json`, and the transition-compatible result
 is written to `logs/target_qpos_selected.json`.
 
-<!-- ### Problem-validation video demo
-
-The policy server must already be running, and the local dataset must exist at
-`~/.cache/huggingface/lerobot/mani_thermalcycler`. Then run the fixed demo with:
-
-```bash
-python ./scripts/autobio_scripts/evaluate.py \
-  --problem-validation-demo \
-  --problem-validation-prefix-percent 30 \
-  --seed 0 \
-  --time_limit 30
-```
-
-The demo executes the fixed prompts `open the lid of the thermal cycler` and
-`place pcrPlate into the thermal cycler`. The same `--seed` reproduces the same
-placement trajectory and frame selection. The frame is sampled uniformly from
-the first 30% of a trajectory matching `place pcrPlate into the thermal cycler`.
-Set `--problem-validation-prefix-percent PERCENT` to change that sampling
-window; for example, `50` samples uniformly from the first 50% of the selected
-trajectory. Valid values are greater than 0 and at most 100.
-After the first prompt satisfies its success predicate, VLA inference stops for
-that prompt. The demo then plans a collision-checked RRT path for the sampled
-state's six arm joints, executes every valid RRT edge with low-level
-interpolation, and restores the sampled gripper value separately. If RRT cannot
-find a path, the run prints
-`RRT_FAILED_SKIP_ACTION` and skips the failed arm motion instead of falling back
-to direct interpolation.
-The restore motion is included in the same replay video as both VLA prompts.
-Front- and left-view MP4s are saved under `videos/` with the fixed
-`problem_validation_open_lid_place_pcr_plate` filename prefix. -->
-
-
-
-<!-- 
-
-python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_centrifuge5910
-
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910" --experiment-mode baseline --num_episodes 20
-
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_2' --time_limit 30 --prompts "press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,pick the balance centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20
-
-python ./scripts/autobio_scripts/evaluate.py --task 'centrifuge5910_long_task_1' --time_limit 30 --prompts "open the lid of the centrifuge5910,pick the experimental centrifuge tube from rack and place it into the centrifuge5910,pick the balance centrifuge tube from rack and place it into the centrifuge5910,close the lid of the centrifuge5910,press the screen button to start the centrifuge5910,open the lid of the centrifuge5910,pick the experimental centrifuge tube from the centrifuge5910 and place it on the rack,close the lid of the centrifuge5910" --experiment-mode baseline --num_episodes 20
-
-python scripts/autobio_scripts/export_lerobot_initial_qpos.py --repo_id mani_thermalcycler 
-
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" --experiment-mode baseline --num_episodes 20
-
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_2' --time_limit 30 --prompts "press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler,close the lid of the thermal cycler" --experiment-mode baseline --num_episodes 20
-
-python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1' --time_limit 30 --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler,screw loosen the knob of the thermal cycler,open the lid of the thermal cycler,take pcrPlate from the thermal cycler" --experiment-mode baseline --num_episodes 20
-
--->
 
 
 ### Experiment modes
@@ -245,13 +195,13 @@ python ./scripts/autobio_scripts/evaluate.py --task 'thermal_cycler_long_task_1'
 | Mode | Transition behavior |
 | --- | --- |
 | `no-transition` | Disable transitions between prompts. This is the default mode. |
-| `baseline` | Randomly sample an initial pose directly from the dataset without retrieval, then use RRT to restore to that pose; if RRT fails, it prints `RRT_FAILED_SKIP_ACTION` and skips the failed arm motion. |
+| `baseline` | If the atomic task exactly matches a trajectory memory, extract that memory's initial state; otherwise, randomly use an indexed memory's initial state. It then uses RRT to restore to that state; if RRT fails, it prints `RRT_FAILED_SKIP_ACTION` and skips the failed arm motion. |
 | `no-retrieval` | Do not provide a target pose. Run the planning/coding agents only, and do not append final target-pose restoration. |
 | `no-agent` | Retrieve the target pose, skip planning/coding agents, and directly interpolate to the retrieved pose. |
-| `full` | Full Sci-VLA transition pipeline: retrieval, planning agent, coding/primitive execution, and final target-pose restoration. |
+| `full` | Full AtomBridge transition pipeline: retrieval, planning/coding agent execution. |
 
 
-### Evaluate LABVLA on simulations
+<!-- ### Evaluate LABVLA on simulations
 
 Start a LABVLA websocket server from the LABVLA environment:
 
@@ -264,7 +214,7 @@ python deployment/serve_labvla.py \
   --training_repo_id mani_thermalcycler
 ```
 
-Then run Sci-VLA evaluation with the LABVLA observation adapter:
+Then run AtomBridge evaluation with the LABVLA observation adapter:
 
 ```bash
 python ./scripts/autobio_scripts/evaluate.py \
@@ -275,7 +225,7 @@ python ./scripts/autobio_scripts/evaluate.py \
   --time_limit 30 \
   --prompts "open the lid of the thermal cycler,place pcrPlate into the thermal cycler,close the lid of the thermal cycler,screw tighten the knob of the thermal cycler,press the button to start the thermal cycler" \
   --experiment-mode no-transition
-```
+``` -->
 
 ### Evaluate the model using local VLM model
 
@@ -309,16 +259,16 @@ python ./scripts/autobio_scripts/evaluate.py \
 
 <!-- ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/Sci-VLA&type=Date)](https://star-history.com/#DEFENSE-SEU/Sci-VLA&Date) -->
+[![Star History Chart](https://api.star-history.com/svg?repos=DEFENSE-SEU/AtomBridge&type=Date)](https://star-history.com/#DEFENSE-SEU/AtomBridge&Date) -->
 
 
 ## Citation
 
-If you find Sci-VLA useful in your research, please cite the paper:
+If you find AtomBridge useful in your research, please cite the paper:
 
 ```bibtex
 @article{pang2026sci,
-  title={Sci-VLA: Agentic VLA Inference Plugin for Long-Horizon Tasks in Scientific Experiments},
+  title={AtomBridge: Agentic VLA Inference Plugin for Long-Horizon Tasks in Scientific Experiments},
   author={Pang, Yiwen and Zhou, Bo and Li, Changjin and Wang, Xuanhao and Xu, Shengxiang and Wang, Deng-Bao and Zhang, Min-Ling and Di, Shimin},
   journal={arXiv preprint arXiv:2602.09430},
   year={2026}

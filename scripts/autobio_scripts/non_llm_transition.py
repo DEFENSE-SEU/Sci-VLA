@@ -923,6 +923,57 @@ def sample_random_dataset_task_qpos(
     }
 
 
+def retrieve_ready_memory_initial_qpos(
+    *,
+    target_prompt: str,
+    memory_db_path: Path = Path("logs/ready_memory_index.json"),
+    rng: np.random.Generator | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Use an exact task match, or randomly fall back to an indexed memory's initial state."""
+    if not memory_db_path.exists():
+        raise FileNotFoundError(
+            f"Ready-memory index not found at {memory_db_path}. "
+            "Please run export_lerobot_ready_memory_index.py first."
+        )
+
+    from ready_memory_retrieval_agent import (
+        _frames_from_memory_entry,
+        _load_memory_index,
+        _memory_task_prompt,
+    )
+
+    memories = _load_memory_index(memory_db_path)
+    requested_prompt = str(target_prompt).strip()
+    exact_matches = [
+        memory for memory in memories if _memory_task_prompt(memory) == requested_prompt
+    ]
+    if exact_matches:
+        memory = exact_matches[0]
+        matched_prompt = requested_prompt
+        selection_strategy = "exact_ready_memory_initial_pose"
+    else:
+        candidate_memories = [memory for memory in memories if _memory_task_prompt(memory)]
+        if not candidate_memories:
+            raise ValueError("Ready-memory index contains no task-labelled memories")
+        generator = rng if rng is not None else np.random.default_rng()
+        memory = candidate_memories[int(generator.integers(0, len(candidate_memories)))]
+        matched_prompt = None
+        selection_strategy = "random_ready_memory_initial_pose_fallback"
+    frames = _frames_from_memory_entry(memory, base_dir=memory_db_path.parent)
+    initial_frame = min(frames, key=lambda frame: int(frame["frame_index"]))
+    selected_qpos = _as_joint_vector(initial_frame["state"])
+    return selected_qpos, {
+        "requested_task_prompt": target_prompt,
+        "matched_task_prompt": matched_prompt,
+        "selected_task_prompt": _memory_task_prompt(memory),
+        "memory_id": memory.get("memory_id", memory.get("id")),
+        "episode_index": memory.get("episode_index"),
+        "initial_frame_index": int(initial_frame["frame_index"]),
+        "selection_strategy": selection_strategy,
+        "selected_qpos": selected_qpos.tolist(),
+    }
+
+
 def execute_non_llm_transition(
     *,
     model,
@@ -934,6 +985,7 @@ def execute_non_llm_transition(
     restore_steps_per_segment: int = 250,
     validation_steps_per_segment: int = 100,
     qpos_db_path: Path = Path("logs/lerobot_initial_qpos.json"),
+    ready_memory_db_path: Path = Path("logs/ready_memory_index.json"),
     rng: np.random.Generator | None = None,
 ) -> dict:
     if mode not in {
@@ -942,6 +994,7 @@ def execute_non_llm_transition(
         "random_future_task_pose_collision_planner",
         "random_future_task_pose_rrt",
         "random_dataset_task_pose_rrt",
+        "ready_memory_initial_pose_rrt",
     }:
         raise ValueError(f"Unsupported non-LLM transition mode: {mode}")
 
@@ -954,7 +1007,13 @@ def execute_non_llm_transition(
     joint_ranges = joint_ranges_from_model(model, jnt_span)
     planning_start = time.perf_counter()
 
-    if mode == "random_dataset_task_pose_rrt":
+    if mode == "ready_memory_initial_pose_rrt":
+        target_qpos, retrieval_info = retrieve_ready_memory_initial_qpos(
+            target_prompt=target_prompt,
+            memory_db_path=ready_memory_db_path,
+            rng=rng,
+        )
+    elif mode == "random_dataset_task_pose_rrt":
         target_qpos, retrieval_info = sample_random_dataset_task_qpos(
             target_prompt=target_prompt,
             qpos_db_path=qpos_db_path,
@@ -977,7 +1036,11 @@ def execute_non_llm_transition(
     target_arm_qpos = _as_joint_vector(target_qpos, dim=current_joint_pos.size)
     target_gripper = float(target_qpos[-1]) if target_qpos.size > current_joint_pos.size else None
 
-    if mode in {"random_future_task_pose_rrt", "random_dataset_task_pose_rrt"}:
+    if mode in {
+        "random_future_task_pose_rrt",
+        "random_dataset_task_pose_rrt",
+        "ready_memory_initial_pose_rrt",
+    }:
         path_plan = plan_joint_path_rrt(
             current_joint_pos,
             target_arm_qpos,

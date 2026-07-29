@@ -2,7 +2,9 @@ from collections import deque
 from contextlib import contextmanager
 import importlib
 import inspect
-from typing import Callable, TypeAlias
+import os
+import sys
+from typing import Any, Callable, TypeAlias
 
 import numpy as np
 import mujoco
@@ -20,11 +22,110 @@ from problem_validation_demo import (
     sample_problem_validation_state,
 )
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 Policy: TypeAlias = Callable[[dict], np.ndarray]
 
 
 class _RequiredVideoWriteError(RuntimeError):
     pass
+
+
+class _CompletionModelPredicate:
+    """Online wrapper around the trained intervention-switch completion model."""
+
+    def __init__(self, config: dict[str, Any]):
+        checkpoint_path = pathlib.Path(config["checkpoint_path"]).expanduser().resolve()
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"Completion-model checkpoint not found: {checkpoint_path}")
+
+        switch_dir = pathlib.Path(__file__).resolve().parents[1] / "intervention_switch"
+        if str(switch_dir) not in sys.path:
+            sys.path.insert(0, str(switch_dir))
+        try:
+            import torch
+            from PIL import Image
+            from transformers import AutoProcessor
+            from model import load_checkpoint
+        except ImportError as exc:
+            raise ImportError(
+                "Completion-model inference requires torch, transformers, and Pillow."
+            ) from exc
+
+        requested_device = str(config.get("device", "auto"))
+        self._torch = torch
+        self._image_type = Image
+        self.device = torch.device(
+            "cuda" if requested_device == "auto" and torch.cuda.is_available() else
+            ("cpu" if requested_device == "auto" else requested_device)
+        )
+        self.model, metadata = load_checkpoint(checkpoint_path, device=self.device)
+        self.processor = AutoProcessor.from_pretrained(metadata["model_name"])
+        self.threshold = float(
+            metadata["threshold"] if config.get("threshold") is None else config["threshold"]
+        )
+        self.consecutive_positive = max(1, int(config.get("consecutive_positive", 3)))
+        self.check_interval = float(config.get("check_interval", 0.2))
+        self._initial_frame = None
+        self._initial_feature = None
+        self._text_feature = None
+        self._prompt = None
+        self._positive_count = 0
+        self._last_check_time: float | None = None
+        self.last_probability: float | None = None
+        print(
+            "[CompletionModel] "
+            f"checkpoint={checkpoint_path} device={self.device} threshold={self.threshold:.3f} "
+            f"consecutive_positive={self.consecutive_positive} check_interval={self.check_interval:.3f}s"
+        )
+
+    def start_prompt(self, prompt: str, initial_frame: np.ndarray) -> None:
+        if initial_frame is None:
+            raise RuntimeError("Completion model needs the primary RGB observation at prompt start.")
+        self._prompt = str(prompt)
+        self._initial_frame = np.asarray(initial_frame, dtype=np.uint8).copy()
+        initial_inputs = self.processor.image_processor(
+            images=[self._image_type.fromarray(self._initial_frame)], return_tensors="pt"
+        )
+        text_inputs = self.processor.tokenizer(
+            [self._prompt], padding=True, truncation=True, return_tensors="pt"
+        )
+        with self._torch.inference_mode():
+            self._initial_feature = self.model.encode_image(
+                initial_inputs["pixel_values"].to(self.device)
+            )
+            self._text_feature = self.model.encode_text(
+                text_inputs["input_ids"].to(self.device),
+                text_inputs["attention_mask"].to(self.device),
+            )
+        self._positive_count = 0
+        self._last_check_time = None
+        self.last_probability = None
+
+    def check(self, prompt: str, current_frame: np.ndarray, current_time: float) -> bool:
+        if current_frame is None:
+            raise RuntimeError("Completion model needs the primary RGB observation for inference.")
+        if self._initial_frame is None or self._prompt != str(prompt):
+            self.start_prompt(str(prompt), current_frame)
+        if (
+            self._last_check_time is not None
+            and current_time - self._last_check_time < self.check_interval
+        ):
+            return False
+
+        image_inputs = self.processor.image_processor(
+            images=[self._image_type.fromarray(np.asarray(current_frame, dtype=np.uint8))],
+            return_tensors="pt",
+        )
+        with self._torch.inference_mode():
+            current_feature = self.model.encode_image(image_inputs["pixel_values"].to(self.device))
+            logits = self.model.classify_features(
+                current_feature, self._initial_feature, self._text_feature
+            )
+            self.last_probability = float(self._torch.sigmoid(logits).item())
+        self._last_check_time = float(current_time)
+        self._positive_count = self._positive_count + 1 if self.last_probability >= self.threshold else 0
+        return self._positive_count >= self.consecutive_positive
 
 
 def _geom_name(model, geom_id: int) -> str:
@@ -714,6 +815,7 @@ class Evaluator:
         judge_confidence_threshold: float = 0.6,
         judge_on_error: str = "fail",
         intervention_mode: str = "non_timeout",
+        completion_model_config: dict[str, Any] | None = None,
         transition_seed: int | None = None,
         problem_validation_demo_config: ProblemValidationDemoConfig | None = None,
     ):
@@ -729,6 +831,13 @@ class Evaluator:
                 )
 
         self.reset()
+        completion_predicate = None
+        if completion_model_config is not None:
+            cached_config = getattr(self, "_completion_model_config", None)
+            if cached_config != completion_model_config:
+                self._completion_model_predicate = _CompletionModelPredicate(completion_model_config)
+                self._completion_model_config = dict(completion_model_config)
+            completion_predicate = self._completion_model_predicate
         if control_fps <= 0:
             raise ValueError(f"control_fps must be positive, got {control_fps}")
         action_repeat_steps = max(1, int(round(1.0 / control_fps / self.model.opt.timestep)))
@@ -758,6 +867,7 @@ class Evaluator:
             "random_future_task_pose_collision_planner",
             "random_future_task_pose_rrt",
             "random_dataset_task_pose_rrt",
+            "ready_memory_initial_pose_rrt",
         }:
             raise ValueError(f"Unsupported transition_mode: {transition_mode}")
         effective_intervention_mode = (intervention_mode or "non_timeout").strip().lower().replace("-", "_")
@@ -856,10 +966,34 @@ class Evaluator:
                 return bool(check_func())
             return None
 
+        def check_prompt_completion(prompt: str | None):
+            """Return the signal that controls VLA intervention, not task scoring."""
+            if completion_predicate is None:
+                return check_prompt_success(prompt)
+            completion_prompt = str(prompt or self.task_info.get("prefix", "")).strip()
+            if not completion_prompt:
+                raise ValueError("Completion-model inference requires a non-empty task prompt.")
+            current_frame = self.get_images()["observation/image"]
+            complete = completion_predicate.check(
+                completion_prompt, current_frame, current_time=float(self.data.time)
+            )
+            if complete:
+                print(
+                    f"[CompletionModel] prompt={completion_prompt!r} "
+                    f"probability={completion_predicate.last_probability:.3f} complete=True"
+                )
+            return complete
+
         def record_prompt_start(prompt: str | None):
             record_func = getattr(self.task, "record_atomic_start", None)
             if callable(record_func):
                 record_func(prompt)
+            if completion_predicate is not None:
+                completion_prompt = str(prompt or self.task_info.get("prefix", "")).strip()
+                if not completion_prompt:
+                    raise ValueError("Completion-model inference requires a non-empty task prompt.")
+                initial_frame = self.get_images()["observation/image"]
+                completion_predicate.start_prompt(completion_prompt, initial_frame)
 
         # Let the scene settle for 2 seconds of simulation time before the first action.
         settle_steps = max(1, int(round(settle_duration / self.model.opt.timestep)))
@@ -894,7 +1028,12 @@ class Evaluator:
                 post_success_seconds=post_success_seconds,
             )
             use_non_timeout_controller = (
-                force_non_timeout or effective_intervention_mode == "non_timeout"
+                # The completion model is an intervention switch: stop as soon as it
+                # predicts completion, but retain current_time_limit as a hard timeout
+                # when it never produces a positive prediction.
+                force_non_timeout
+                or completion_predicate is not None
+                or effective_intervention_mode == "non_timeout"
             )
 
             def prompt_should_continue():
@@ -916,11 +1055,11 @@ class Evaluator:
                         healthy = step()
                         if not healthy:
                             return False, False
-                    prompt_success = check_prompt_success(prompt)
+                    prompt_completion = check_prompt_completion(prompt)
                     previous_success_time = controller.success_time
                     tail_complete = controller.observe(
                         self.data.time,
-                        success=prompt_success,
+                        success=prompt_completion,
                     )
                     if previous_success_time is None and controller.success_time is not None:
                         if post_success_seconds > 0.0:
@@ -929,7 +1068,7 @@ class Evaluator:
                                 f"first_success_time={controller.success_time:.6f}"
                             )
                     if tail_complete:
-                        return True, True
+                        return True, check_prompt_success(prompt)
             return True, check_prompt_success(prompt)
 
         if problem_validation_demo_config is not None:
@@ -1224,6 +1363,10 @@ class Evaluator:
                             mode=effective_transition_mode,
                             target_top_k=3,
                             rng=transition_rng,
+                            ready_memory_db_path=pathlib.Path(
+                                (llm_config or {}).get("ready_memory_db_path")
+                                or "logs/ready_memory_index.json"
+                            ),
                         )
                         self._capture_replay_frame()
                     finally:

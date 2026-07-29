@@ -1,0 +1,71 @@
+task,episode,frames,accuracy,precision,recall
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0000_8383,487,0.9958932238193019,0.9259259259259259,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0001_7167,489,0.9979550102249489,0.9615384615384616,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0002_5723,492,0.9959349593495935,0.9259259259259259,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0003_3196,490,1.0,1.0,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0004_6443,488,0.9959016393442623,0.9259259259259259,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0005_6707,484,0.9979338842975206,0.9615384615384616,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0006_6106,491,1.0,1.0,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0007_2664,485,1.0,1.0,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0008_1777,486,0.9958847736625515,0.9259259259259259,1.0
+close the lid of the thermal cycler,logs/thermal_cycler_tasks/close_thermal_cycler_lid_0009_3948,487,1.0,1.0,1.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0000_2711,796,0.9673366834170855,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0001_8309,798,0.9674185463659147,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0002_6299,801,0.9675405742821473,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0003_5684,796,0.9673366834170855,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0004_3209,800,0.9675,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0005_7255,794,0.9659949622166247,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0006_9763,802,0.9675810473815462,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0007_1333,792,0.9671717171717171,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0008_5337,798,0.9674185463659147,0.0,0.0
+open the lid of the thermal cycler,logs/thermal_cycler_tasks/open_thermal_cycler_lid_0009_9696,800,0.96625,0.0,0.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0000_8210,677,0.8951255539143279,0.39316239316239315,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0001_7184,674,0.8991097922848664,0.40869565217391307,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0002_5540,675,0.8933333333333333,0.3898305084745763,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0003_6589,679,0.8910162002945509,0.3884297520661157,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0004_6469,674,0.8946587537091988,0.39316239316239315,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0005_3107,677,0.8980797636632201,0.4051724137931034,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0006_7189,677,0.8980797636632201,0.4051724137931034,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0007_7182,677,0.8980797636632201,0.4051724137931034,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0008_4026,673,0.8974739970282318,0.4,1.0
+place pcrPlate into the thermal cycler,logs/thermal_cycler_tasks/place_pcrPlate_into_thermalCycler_0009_6677,675,0.8948148148148148,0.3983050847457627,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0000_3638,177,0.655367231638418,0.24691358024691357,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0001_4326,191,0.643979057591623,0.22727272727272727,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0002_9122,187,0.6631016042780749,0.24096385542168675,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0003_9770,182,0.6483516483516484,0.2289156626506024,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0004_3504,174,0.6609195402298851,0.2625,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0005_9937,179,0.6480446927374302,0.25,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0006_7733,182,0.6428571428571429,0.2441860465116279,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0007_3380,176,0.6534090909090909,0.2375,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0008_2099,173,0.6358381502890174,0.25,1.0
+press the button of the thermal cycler,logs/thermal_cycler_tasks/press_thermal_cycler_button_0009_9656,185,0.6378378378378379,0.22988505747126436,1.0
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0000_9377,353,0.9546742209631728,1.0,0.7974683544303798
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0001_7105,353,0.9745042492917847,1.0,0.8860759493670886
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0002_7939,353,0.9830028328611898,1.0,0.9240506329113924
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0003_1115,353,0.9943342776203966,1.0,0.9736842105263158
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0004_4578,355,0.7830985915492957,1.0,0.01282051282051282
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0005_5204,352,0.9943181818181818,1.0,0.9743589743589743
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0006_8425,355,0.8647887323943662,1.0,0.3924050632911392
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0007_3646,351,0.7806267806267806,1.0,0.01282051282051282
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0008_7612,354,0.9887005649717514,1.0,0.9487179487179487
+screw loosen the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_loosen_knob_0009_8382,351,0.8347578347578347,1.0,0.2564102564102564
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0000_9392,383,0.7127937336814621,0.47115384615384615,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0001_8478,379,0.7150395778364116,0.4782608695652174,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0002_5842,381,0.7060367454068242,0.4716981132075472,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0003_9286,384,0.7604166666666666,0.5157894736842106,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0004_6941,380,0.8973684210526316,0.7153284671532847,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0005_3090,383,0.8798955613577023,0.684931506849315,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0006_7209,382,0.7827225130890052,0.5414364640883977,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0007_9697,382,0.9109947643979057,0.7443609022556391,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0008_9691,378,0.8571428571428571,0.6447368421052632,1.0
+screw tighten the knob of the thermal cycler,logs/thermal_cycler_tasks/screw_tighten_knob_0009_1585,380,0.6578947368421053,0.4298245614035088,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0000_3092,612,1.0,1.0,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0001_2160,610,1.0,1.0,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0002_2315,612,0.9983660130718954,0.9864864864864865,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0003_9064,614,0.998371335504886,0.9863013698630136,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0004_4537,609,1.0,1.0,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0005_7543,612,0.9983660130718954,1.0,0.9863013698630136
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0006_1009,612,1.0,1.0,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0007_3423,611,1.0,1.0,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0008_6729,608,1.0,1.0,1.0
+take pcrPlate from the thermal cycler,logs/thermal_cycler_tasks/take_pcrPlate_from_thermalCycler_0009_1640,610,0.9983606557377049,0.9864864864864865,1.0

@@ -562,6 +562,94 @@ def _resolve_memory_entry(
     return best
 
 
+def _build_memory_task_match_prompt(task_prompt: str, candidate_tasks: list[str]) -> str:
+    task_lines = "\n".join(f"- {task}" for task in candidate_tasks)
+    return f"""
+You match a pending robot atomic task to one task label from a ready-memory index.
+
+Pending atomic task:
+{task_prompt}
+
+Available ready-memory atomic task labels:
+{task_lines}
+
+Select the single label that semantically describes the same atomic task. You must
+return a label copied exactly from the available list. Do not select a related
+but different operation, object, direction, or instrument state.
+
+Return strictly one JSON object:
+{{
+  "matched_task": "one exact label from the available list",
+  "reason": "brief semantic justification"
+}}
+""".strip()
+
+
+def _match_memory_task_with_llm(
+    *,
+    task_prompt: str,
+    candidate_tasks: list[str],
+    llm_config: dict | None,
+    client: Any | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Use the LLM to choose one indexed atomic-task label, when configured."""
+    model_name = _llm_config_value(llm_config, "model_name", env_key="MODEL_NAME")
+    if not model_name:
+        return None
+    if not candidate_tasks:
+        raise ValueError("Cannot match ready memory: no candidate task labels")
+
+    from openai import OpenAI
+    from transition_generation import (
+        _normalize_backend_mode,
+        _normalize_thinking_mode,
+        _request_json_object,
+    )
+
+    base_url = _llm_config_value(llm_config, "base_url", env_key="BASE_URL")
+    api_key = _llm_config_value(llm_config, "api_key", env_key="API_KEY") or "EMPTY"
+    if client is None:
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
+
+    raw = _request_json_object(
+        client=client,
+        model_name=model_name,
+        request_input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": _build_memory_task_match_prompt(task_prompt, candidate_tasks),
+                    }
+                ],
+            }
+        ],
+        stage_name="ready-memory-task-match",
+        max_attempts=int(_llm_config_value(llm_config, "max_attempts", 3) or 3),
+        temperature=_llm_config_value(llm_config, "temperature"),
+        top_p=_llm_config_value(llm_config, "top_p"),
+        max_tokens=_llm_config_value(llm_config, "max_tokens"),
+        timeout=_llm_config_value(llm_config, "timeout"),
+        backend_mode=_normalize_backend_mode(
+            _llm_config_value(llm_config, "backend_mode", "auto")
+        ),
+        thinking_mode=_normalize_thinking_mode(
+            _llm_config_value(llm_config, "thinking", "auto")
+        ),
+    )
+    selected = str(raw.get("matched_task") or "").strip()
+    if selected not in candidate_tasks:
+        raise ValueError(
+            "LLM ready-memory match must return an exact indexed task label; "
+            f"got {selected!r}"
+        )
+    return selected, raw
+
+
 def _abspath_from_base(path_value: Any, *, base_dir: Path) -> str | None:
     if path_value is None:
         return None
@@ -774,15 +862,37 @@ def retrieve_ready_memory_from_index(
 ) -> dict[str, Any]:
     db_path = Path(memory_db_path)
     memories = _load_memory_index(db_path)
-    memory, matched_prompt, match_score = _resolve_memory_entry(
-        memories,
-        task_prompt,
-        match_cutoff=match_cutoff,
+    candidate_tasks = list(dict.fromkeys(
+        task for task in (_memory_task_prompt(memory) for memory in memories) if task
+    ))
+    llm_match = _match_memory_task_with_llm(
+        task_prompt=task_prompt,
+        candidate_tasks=candidate_tasks,
+        llm_config=llm_config,
+        client=client,
     )
+    if llm_match is None:
+        memory, matched_prompt, match_score = _resolve_memory_entry(
+            memories,
+            task_prompt,
+            match_cutoff=match_cutoff,
+        )
+        memory_match_method = "local_fuzzy"
+        memory_match_raw = None
+    else:
+        matched_prompt, memory_match_raw = llm_match
+        matching_memories = [
+            memory for memory in memories if _memory_task_prompt(memory) == matched_prompt
+        ]
+        if not matching_memories:
+            raise ValueError(f"No ready memory found for LLM-selected task: {matched_prompt!r}")
+        memory = matching_memories[0]
+        match_score = 1.0
+        memory_match_method = "llm"
     print(
         "[ReadyStateAgent] memory match: "
         f"requested={task_prompt!r} matched={matched_prompt!r} "
-        f"score={match_score:.3f} "
+        f"method={memory_match_method} score={match_score:.3f} "
         f"memory_id={memory.get('memory_id', memory.get('id'))!r} "
         f"episode={memory.get('episode_index')!r}"
     )
@@ -813,6 +923,8 @@ def retrieve_ready_memory_from_index(
         "requested_task_prompt": task_prompt,
         "matched_task_prompt": matched_prompt,
         "match_score": match_score,
+        "memory_match_method": memory_match_method,
+        "memory_match_raw": memory_match_raw,
         "memory_db_path": str(db_path),
         "memory_id": memory.get("memory_id", memory.get("id")),
         "episode_index": memory.get("episode_index"),

@@ -5,6 +5,10 @@ from datetime import datetime
 import sys
 import subprocess
 
+# Video encoding creates child processes after the completion model has used
+# Hugging Face tokenizers. Disable its thread pool up front to avoid fork warnings.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from tqdm import tqdm
 import numpy as np
 
@@ -170,7 +174,7 @@ def resolve_experiment_mode_config(
     if mode == "baseline":
         return {
             "use_transition_generation": True,
-            "transition_mode": "random_dataset_task_pose_rrt",
+            "transition_mode": "ready_memory_initial_pose_rrt",
             "no_planning": False,
             "no_interpolation": False,
             "no_retrieval": False,
@@ -220,6 +224,7 @@ def evaluate_task(
     judge_confidence_threshold: float = 0.6,
     judge_on_error: str = "fail",
     intervention_mode: str = "non_timeout",
+    completion_model_config: dict | None = None,
     transition_seed: int | None = None,
     problem_validation_demo_config: ProblemValidationDemoConfig | None = None,
 ):
@@ -241,6 +246,7 @@ def evaluate_task(
         judge_confidence_threshold=judge_confidence_threshold,
         judge_on_error=judge_on_error,
         intervention_mode=intervention_mode,
+        completion_model_config=completion_model_config,
         transition_seed=transition_seed,
         **(
             {"problem_validation_demo_config": problem_validation_demo_config}
@@ -437,6 +443,7 @@ _max_prompt_retries: int
 _judge_confidence_threshold: float
 _judge_on_error: str
 _intervention_mode: str
+_completion_model_config: dict | None = None
 _log_file_handle = None
 
 
@@ -493,6 +500,7 @@ def init_worker(
     judge_confidence_threshold: float,
     judge_on_error: str,
     intervention_mode: str,
+    completion_model_config: dict | None,
     mujoco_gl: str,
     queue,
     prompts: list[str] | None = None,
@@ -504,7 +512,7 @@ def init_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from task import create_task
     from evaluator import Evaluator
-    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _transition_mode, _no_planning, _no_interpolation, _no_retrieval, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error, _intervention_mode
+    global _evaluator, _policy, _prompts, _time_limit, _use_transition_generation, _transition_mode, _no_planning, _no_interpolation, _no_retrieval, _control_fps, _llm_config, _use_task_judge, _max_prompt_retries, _judge_confidence_threshold, _judge_on_error, _intervention_mode, _completion_model_config
     task = create_task(task_name)
     _evaluator = Evaluator(task, image_history=image_history, video_fps=video_fps, render_video=render_video)
     _policy = make_policy(host, port, policy_backend)
@@ -522,6 +530,7 @@ def init_worker(
     _judge_confidence_threshold = judge_confidence_threshold
     _judge_on_error = judge_on_error
     _intervention_mode = intervention_mode
+    _completion_model_config = completion_model_config
 
 def step_worker(seed: int):
     return evaluate_task(
@@ -542,6 +551,7 @@ def step_worker(seed: int):
         _judge_confidence_threshold,
         _judge_on_error,
         _intervention_mode,
+        _completion_model_config,
         transition_seed=seed,
     )
 
@@ -555,7 +565,7 @@ def parse_args():
         type=str,
         default="openpi",
         choices=POLICY_BACKENDS,
-        help="Policy websocket payload adapter to use: openpi keeps current keys; labvla maps Sci-VLA keys to LABVLA camera/state keys.",
+        help="Policy websocket payload adapter to use: openpi keeps current keys; labvla maps AtomBridge keys to LABVLA camera/state keys.",
     )
     parser.add_argument(
         "--problem-validation-demo",
@@ -580,7 +590,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None, help="Master seed for evaluation")
     parser.add_argument("--render_device_id", type=str, default='0', help="Comma-separated list of GPU device IDs for rendering")
     parser.add_argument("--prompts", type=str, default=None, help="Comma-separated list of prompts to execute sequentially")
-    parser.add_argument("--time_limit", type=float, default=100, help="per task time limit")
+    parser.add_argument("--time_limit", type=float, default=30, help="per task time limit")
     parser.add_argument(
         "--intervention-mode",
         type=str,
@@ -625,7 +635,8 @@ def parse_args():
         choices=EXPERIMENT_MODES,
         help=(
             "High-level experiment mode. no-transition: disable transitions; "
-            "baseline: random dataset init pose + RRT transition, falling back to interpolation; "
+            "baseline: use an exactly matching atomic-task memory's initial pose, or randomly fall "
+            "back to an indexed memory's initial pose, then use RRT to restore to that pose; "
             "no-retrieval: planning/coding agents only with no target restore; "
             "no-agent: retrieve target pose, then interpolate restore without planning/coding agents; "
             "full: retrieval + planning + coding."
@@ -644,10 +655,11 @@ def parse_args():
             "random_future_task_pose_collision_planner",
             "random_future_task_pose_rrt",
             "random_dataset_task_pose_rrt",
+            "ready_memory_initial_pose_rrt",
         ],
         help=(
             "Transition executor between prompts. auto preserves --use-transition-generation "
-            "behavior; llm uses Sci transition generation; retrieval_* modes use non-LLM baselines."
+            "behavior; llm uses transition generation; retrieval_* modes use non-LLM baselines."
         ),
     )
     parser.add_argument(
@@ -738,6 +750,40 @@ def parse_args():
         help="Use a VLM judge after each prompt to decide whether to advance or retry the current prompt.",
     )
     parser.add_argument(
+        "--completion-model-checkpoint",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Use the trained completion-switch checkpoint at PATH to control online prompt "
+            "intervention; task.check() remains the success metric."
+        ),
+    )
+    parser.add_argument(
+        "--completion-model-threshold",
+        type=float,
+        default=0.05,
+        help="Completion probability threshold; defaults to the threshold saved in the checkpoint.",
+    )
+    parser.add_argument(
+        "--completion-model-consecutive-positive",
+        type=int,
+        default=10,
+        help="Consecutive positive completion predictions required before a prompt is complete.",
+    )
+    parser.add_argument(
+        "--completion-model-check-interval",
+        type=float,
+        default=0.2,
+        help="Minimum simulated seconds between completion-model predictions (default: 0.2).",
+    )
+    parser.add_argument(
+        "--completion-model-device",
+        type=str,
+        default="auto",
+        help="Torch device for completion-model inference (default: auto selects CUDA when available).",
+    )
+    parser.add_argument(
         "--max-prompt-retries",
         type=int,
         default=1,
@@ -813,6 +859,21 @@ if __name__ == "__main__":
         "thinking": args.llm_thinking,
         "backend_mode": args.llm_backend_mode,
     }
+    completion_model_config = None
+    if args.completion_model_checkpoint is not None:
+        if args.completion_model_threshold is not None and not 0.0 <= args.completion_model_threshold <= 1.0:
+            raise ValueError("--completion-model-threshold must be in [0, 1]")
+        if args.completion_model_consecutive_positive < 1:
+            raise ValueError("--completion-model-consecutive-positive must be at least 1")
+        if args.completion_model_check_interval < 0:
+            raise ValueError("--completion-model-check-interval must be non-negative")
+        completion_model_config = {
+            "checkpoint_path": args.completion_model_checkpoint,
+            "threshold": args.completion_model_threshold,
+            "consecutive_positive": args.completion_model_consecutive_positive,
+            "check_interval": args.completion_model_check_interval,
+            "device": args.completion_model_device,
+        }
     experiment_config = resolve_experiment_mode_config(
         experiment_mode=args.experiment_mode,
         use_transition_generation=args.use_transition_generation,
@@ -866,6 +927,7 @@ if __name__ == "__main__":
                 args.judge_confidence_threshold,
                 args.judge_on_error,
                 args.intervention_mode,
+                completion_model_config,
                 transition_seed=seed,
                 problem_validation_demo_config=problem_validation_demo_config,
             )
@@ -908,6 +970,7 @@ if __name__ == "__main__":
                 args.judge_confidence_threshold,
                 args.judge_on_error,
                 args.intervention_mode,
+                completion_model_config,
                 mujoco_gl,
                 queue,
                 prompts,
